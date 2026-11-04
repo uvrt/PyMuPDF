@@ -414,3 +414,19 @@
  }
  
  #endif /* HAVE_LEPTONICA */
+--- a/source/fitz/stream-read.c
++++ b/source/fitz/stream-read.c
+@@ -51,10 +51,11 @@
+ 	return count;
+ }
+ 
+-static unsigned char skip_buf[4096];
+-
+ size_t fz_skip(fz_context *ctx, fz_stream *stm, size_t len)
+ {
++	/* Free-threading patch: the sink for skipped bytes is per call; a static
++	 * buffer was written by every thread at once (a data race under TSan). */
++	unsigned char skip_buf[4096];
+ 	size_t count, l, total = 0;
+ 
+ 	while (len)

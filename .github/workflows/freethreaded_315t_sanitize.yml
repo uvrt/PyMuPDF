@@ -74,13 +74,17 @@ jobs:
             echo "=== $l" | tee -a ../san.txt
             timeout 2400 "$PY" "$@" > out.txt 2>&1; rc=$?
             tail -20 out.txt | tee -a ../san.txt; echo "exit $rc" | tee -a ../san.txt
-            [ $rc = 0 ] || FAIL=1
+            # TSan exits 66 when it printed reports; tsan_triage.py below judges them.
+            [ $rc = 0 ] || { [ "${{ matrix.san }}" = thread ] && [ $rc = 66 ]; } || FAIL=1
           }
           run "corpus indep=0" "$V/stress_render.py" corpus 4 2
           MUPDF_indep_ctx=1 run "corpus indep=1" "$V/stress_render.py" corpus 4 1
           MAX_PAGES=4 run "docs indep=0" "$V/stress_render.py" ../docs 4 1
           MAX_PAGES=4 MUPDF_indep_ctx=1 run "docs indep=1" "$V/stress_render.py" ../docs 4 1
           ls -l
+          if [ "${{ matrix.san }}" = thread ] && ls tsan.* >/dev/null 2>&1; then
+            LD_PRELOAD= python3 -I "$V/tsan_triage.py" tsan.* | tee -a ../san.txt || FAIL=1
+          fi
           exit $FAIL
       - name: Summarise reports
         if: always()
