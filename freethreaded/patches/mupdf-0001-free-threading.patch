@@ -430,3 +430,23 @@
  	size_t count, l, total = 0;
  
  	while (len)
+--- a/source/pdf/pdf-store.c
++++ b/source/pdf/pdf-store.c
+@@ -52,6 +52,17 @@
+ static int
+ pdf_cmp_key(fz_context *ctx, void *k0, void *k1)
+ {
++	/* Free-threading patch: keys from different documents never match.
++	 * pdf_objcmp compares indirect references by number only, so a direct
++	 * key (say << /Function 5 0 R >>) from one document matched the same
++	 * key from another, whose object 5 differs. And for dictionaries it
++	 * looks the objects up in their documents' xref tables, which update an
++	 * index cache: with one shared store, a lookup on one thread wrote into
++	 * another thread's document (a ThreadSanitizer data race). The bound
++	 * document is fixed when an object is created, so this check reads
++	 * nothing that changes. Indirect keys already hash by document. */
++	if (pdf_get_bound_document(ctx, (pdf_obj *)k0) != pdf_get_bound_document(ctx, (pdf_obj *)k1))
++		return 1;
+ 	return pdf_objcmp(ctx, (pdf_obj *)k0, (pdf_obj *)k1);
+ }
+ 
