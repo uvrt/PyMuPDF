@@ -25,10 +25,13 @@ Linux x86_64 only. Started from the uvrt 3.15t build kit (4 November 2026).
 | MuPDF glyph cache (`draw-glyph.c`) | On a cache miss, FreeType rasterised the glyph while holding `FZ_LOCK_GLYPHCACHE`, blocking every other thread's cache lookups. | Rendered outside the lock, as MuPDF already does for Type 3 glyphs; a glyph rendered twice meanwhile is inserted once. |
 | MuPDF context | `reinit_singlethreaded()`: one context for all threads. | Each thread keeps its own cloned context. |
 
-Still shared in clone mode, and measured by the `profile` CI job: refcount changes (`fz_keep_*` /
-`fz_drop_*`, twice per extracted character) under `FZ_LOCK_ALLOC`, and `FZ_LOCK_FREETYPE`, one
-lock for all FreeType faces. Making refcounts atomic is the
-next step if the profile shows `FZ_LOCK_ALLOC` contention.
+Still shared in clone mode: refcount changes (`fz_keep_*` / `fz_drop_*`, twice per extracted
+character, and every `pdf_obj` keep/drop) under `FZ_LOCK_ALLOC`, and `FZ_LOCK_FREETYPE`, one lock
+for all FreeType faces. The optional `patches/mupdf-0002-atomic-refcounts.patch`
+(`PYMUPDF_FT_ATOMIC_REFCOUNTS=1` for `build_pymupdf.sh`) makes the `fz_keep_imp*`/`fz_drop_imp*`
+counts atomic (compare-and-swap; counts ≤ 0 still mark static objects). Those counts are written
+only through these functions; storable objects, whose counts `store.c` changes together with the
+store, keep the lock. CI builds, verifies and profiles both variants (`base` and `atomic`).
 
 ### Thread-safety fixes
 
@@ -55,6 +58,7 @@ next step if the profile shows `FZ_LOCK_ALLOC` contention.
 | `src/__init__.py`, `src/table.py`, `src/extra.i` | The changes above; `_free_threaded` and `_get_layout_per_thread` flags. |
 | `setup.py` | Don't add `pymupdf-layout==2.1` to the requirements when layout is embedded (it pulled in the empty placeholder package). |
 | `freethreaded/patches/mupdf-0001-free-threading.patch` | MuPDF 1.28.6: allocator fast path, glyph rendering outside the glyph cache lock, font cache publishing, warning/error callbacks for all threads, optional `MUPDF_indep_ctx=1`. Edits `scripts/wrap/cpp.py` and `swig.py` (code generators), so re-check on every MuPDF upgrade. |
+| `freethreaded/patches/mupdf-0002-atomic-refcounts.patch` | Optional (see above): atomic `fz_keep_imp*`/`fz_drop_imp*` in `include/mupdf/fitz/context.h`. |
 | `freethreaded/patches/layout-0001-free-threading.patch` | pymupdf_layout 2.1: per-thread models, onnxruntime thread settings, `GlobalConfig`. |
 | `freethreaded/patches/pymupdf4llm-0001-free-threading.patch` | pymupdf4llm: lock skipped with per-thread models, OCR and message fixes. |
 | `freethreaded/patches/onnxruntime-0001-python-3.15-packaging.patch` | onnxruntime 1.31.1: the 3.15 subset of upstream PR #33359 (classifier, numpy pin for unit-test builds). |

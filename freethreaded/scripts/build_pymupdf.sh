@@ -4,6 +4,7 @@
 # sources with the patches in ../patches.
 #
 # usage: freethreaded/scripts/build_pymupdf.sh /path/to/python3.15t [WORKDIR]
+#   PYMUPDF_FT_ATOMIC_REFCOUNTS=1 also applies patches/mupdf-0002-atomic-refcounts.patch.
 # result: WORKDIR/dist/pymupdf-2.1-cp315-cp315t-linux_x86_64.whl
 #
 # Needs: git, curl, patch, a C/C++ toolchain (gcc/g++ 13+, make), python3.15t with venv.
@@ -51,6 +52,9 @@ fetch "$MUPDF_URL" "$MUPDF_SHA256" "mupdf-$MUPDF_VERSION-source.tar.gz"
 rm -rf "mupdf-$MUPDF_VERSION-source"
 tar xzf "mupdf-$MUPDF_VERSION-source.tar.gz"
 patch -d "mupdf-$MUPDF_VERSION-source" -p1 < "$FT/patches/mupdf-0001-free-threading.patch"
+if [ "${PYMUPDF_FT_ATOMIC_REFCOUNTS:-0}" = 1 ]; then
+    patch -d "mupdf-$MUPDF_VERSION-source" -p1 < "$FT/patches/mupdf-0002-atomic-refcounts.patch"
+fi
 
 # pymupdf_layout + pymupdf4llm, patched for free threading: a layout model per thread, thread-safe
 # shared state, onnxruntime thread pools sized for parallel threads.

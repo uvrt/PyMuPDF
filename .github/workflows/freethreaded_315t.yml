@@ -43,6 +43,11 @@ jobs:
   pymupdf:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      matrix:
+        variant: [base, atomic]   # atomic: + patches/mupdf-0002-atomic-refcounts.patch
+    env:
+      PYMUPDF_FT_ATOMIC_REFCOUNTS: ${{ matrix.variant == 'atomic' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - name: Python 3.15t
@@ -53,19 +58,27 @@ jobs:
         run: freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work"
       - uses: actions/upload-artifact@v4
         with:
-          name: pymupdf-cp315t
+          name: pymupdf-cp315t-${{ matrix.variant }}
           path: ${{ runner.temp }}/work/dist/*.whl
 
   verify:
     needs: [onnxruntime, pymupdf]
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, atomic]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          name: onnxruntime-cp315t
           path: wheels
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: pymupdf-cp315t-${{ matrix.variant }}
+          path: wheels
       - name: Real-world test PDFs
         id: docs
         uses: actions/cache@v4
@@ -95,19 +108,27 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-log
+          name: verify-log-${{ matrix.variant }}
           path: verify.txt
 
   profile:
     needs: [onnxruntime, pymupdf]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, atomic]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          name: onnxruntime-cp315t
           path: wheels
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: pymupdf-cp315t-${{ matrix.variant }}
+          path: wheels
       - name: Real-world test PDFs
         id: docs2
         uses: actions/cache@v4
@@ -157,7 +178,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: profile
+          name: profile-${{ matrix.variant }}
           path: |
             profile.txt
             perf_*.txt
