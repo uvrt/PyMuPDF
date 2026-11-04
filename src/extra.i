@@ -3619,8 +3619,9 @@ mupdf::FzDisplayList page_display_list(mupdf::FzPage& page, int annots)
 // Runs a display list into a draw device (no Python callbacks) detached, then closes the device.
 void draw_display_list(mupdf::FzDisplayList& list, mupdf::FzDevice& dev, mupdf::FzRect& clip)
 {
+    mupdf::FzCookie cookie;
     JM_Detached detached;
-    mupdf::fz_run_display_list(list, dev, mupdf::FzMatrix(), clip, mupdf::FzCookie());
+    mupdf::fz_run_display_list(list, dev, mupdf::FzMatrix(), clip, cookie);
     mupdf::fz_close_device(dev);
 }
 
