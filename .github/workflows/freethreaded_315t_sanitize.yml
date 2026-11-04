@@ -39,8 +39,14 @@ jobs:
           sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Build PyMuPDF with -fsanitize=${{ matrix.san }}
         run: |
-          F="-g -O1 -fno-omit-frame-pointer -fsanitize=${{ matrix.san }}"
-          export XCFLAGS="$F" XCXXFLAGS="$F" XLIB_LDFLAGS="-fsanitize=${{ matrix.san }}" CFLAGS="$F" LDFLAGS="-fsanitize=${{ matrix.san }}"
+          # Compiler wrappers add the flags to every compile and link (XCFLAGS would also reach swig).
+          mkdir -p "$RUNNER_TEMP/sanbin"
+          for c in cc gcc c++ g++; do
+            printf '#!/bin/sh\nexec /usr/bin/%s "$@" -g -fno-omit-frame-pointer -fsanitize=%s\n' "$c" "${{ matrix.san }}" > "$RUNNER_TEMP/sanbin/$c"
+            chmod +x "$RUNNER_TEMP/sanbin/$c"
+          done
+          export PATH="$RUNNER_TEMP/sanbin:$PATH"
+          cc --version | head -1
           freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work"
           "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
           "$RUNNER_TEMP/ours/bin/pip" install -q "$RUNNER_TEMP"/work/dist/pymupdf-*.whl
