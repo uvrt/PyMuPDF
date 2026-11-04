@@ -1,0 +1,19 @@
+diff --git a/src/helpers/document_layout.py b/src/helpers/document_layout.py
+index a484453..ad0be94 100644
+--- a/src/helpers/document_layout.py
++++ b/src/helpers/document_layout.py
+@@ -54,7 +54,13 @@ BULLETS = tuple(utils.BULLETS)
+ 
+ 
+ def get_layout_locked(page: pymupdf.Page, **kwargs):
+-    """Serialize PyMuPDF layout inference, which uses process-global state."""
++    """Serialize PyMuPDF layout inference, which uses process-global state.
++
++    Not needed when pymupdf.layout gives each thread its own model (the
++    default on free-threaded Python).
++    """
++    if getattr(pymupdf, "_get_layout_per_thread", False):
++        return page.get_layout(**kwargs)
+     with _LAYOUT_LOCK:
+         return page.get_layout(**kwargs)
+ 

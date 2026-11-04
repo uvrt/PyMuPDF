@@ -23,7 +23,9 @@ import pathlib
 import re
 import string
 import sys
+import sysconfig
 import tarfile
+import threading
 import time
 import typing
 import warnings
@@ -339,6 +341,13 @@ _globals = _Globals()
 
 _get_layout: typing.Optional[typing.Callable] = None
 
+# Set to True by pymupdf.layout when _get_layout keeps one model per thread, so
+# callers need not serialise layout calls.
+_get_layout_per_thread = False
+
+# True on free-threaded (no-GIL) Python builds.
+_free_threaded = bool(sysconfig.get_config_var('Py_GIL_DISABLED'))
+
 # Set by pymupdf.layout.activate(), which runs when pymupdf.layout is imported.
 # Importing is deferred until needed, see __getattr__() and Page.get_layout().
 
@@ -410,7 +419,10 @@ else:
         import mupdf
     if hasattr(mupdf, 'internal_check_ndebug'):
         mupdf.internal_check_ndebug()
-    mupdf.reinit_singlethreaded()
+    if not _free_threaded:
+        # Without the GIL, threads must keep the per-thread contexts that
+        # MuPDF's C++ bindings create; one shared context crashes.
+        mupdf.reinit_singlethreaded()
 
 def _int_rc(text):
     '''
@@ -2738,20 +2750,56 @@ class Xml:
     add_kbd = add_code
 
 
+_fixed_colorspaces = threading.local()
+
+
+def _fixed_colorspace(fixed):
+    '''
+    Returns the calling thread's mupdf.FzColorspace for `fixed`.
+
+    Device colorspaces belong to a fz_context and are refcounted under its
+    locks. Without the GIL each thread can have its own, fully independent
+    context (MUPDF_indep_ctx=1), so a colorspace made on one thread must not
+    be used from another.
+    '''
+    cache = _fixed_colorspaces.__dict__
+    cs = cache.get(fixed)
+    if cs is None:
+        cs = cache[fixed] = mupdf.FzColorspace(fixed)
+    return cs
+
+
 class Colorspace:
 
     def __init__(self, type_):
         """Supported are GRAY, RGB and CMYK."""
         if isinstance( type_, mupdf.FzColorspace):
-            self.this = type_
-        elif type_ == CS_GRAY:
-            self.this = mupdf.FzColorspace(mupdf.FzColorspace.Fixed_GRAY)
+            self._this = type_
+            self._fixed = None
+            return
+        if type_ == CS_GRAY:
+            fixed = mupdf.FzColorspace.Fixed_GRAY
         elif type_ == CS_CMYK:
-            self.this = mupdf.FzColorspace(mupdf.FzColorspace.Fixed_CMYK)
-        elif type_ == CS_RGB:
-            self.this = mupdf.FzColorspace(mupdf.FzColorspace.Fixed_RGB)
+            fixed = mupdf.FzColorspace.Fixed_CMYK
         else:
-            self.this = mupdf.FzColorspace(mupdf.FzColorspace.Fixed_RGB)
+            fixed = mupdf.FzColorspace.Fixed_RGB
+        if _free_threaded:
+            self._this = None
+            self._fixed = fixed
+        else:
+            self._this = mupdf.FzColorspace(fixed)
+            self._fixed = None
+
+    @property
+    def this(self):
+        if self._fixed is not None:
+            return _fixed_colorspace(self._fixed)
+        return self._this
+
+    @this.setter
+    def this(self, value):
+        self._this = value
+        self._fixed = None
 
     def __repr__(self):
         x = ("", "GRAY", "", "RGB", "CMYK")[self.n]

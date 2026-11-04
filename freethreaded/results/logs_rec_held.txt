@@ -1,0 +1,181 @@
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+
+=== Document parser messages ===
+Warning: RapidOCR is missing. Install for much improved OCR results.
+pages=142 calls=7326 features_secs=1.524 total_secs=104.41

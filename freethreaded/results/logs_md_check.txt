@@ -1,0 +1,11 @@
+shipped threads=1 gil=True jobs=60 identical=60 different=0 wall=98.3s []
+python=3.15.2 gil=False pages=142 calls=7326 fields/call=112 exact=7326 mismatched=0 {}
+shipped threads=1 gil=False jobs=60 identical=60 different=0 wall=96.4s []
+MUPDF_indep_ctx=1
+perthread threads=1 gil=False jobs=180 identical=180 different=0 wall=279.1s []
+perthread threads=4 gil=False jobs=180 identical=180 different=0 wall=236.2s []
+perthread threads=8 gil=False jobs=180 identical=180 different=0 wall=346.7s []
+MUPDF_indep_ctx=0
+perthread threads=1 gil=False jobs=180 identical=180 different=0 wall=292.1s []
+perthread threads=4 gil=False jobs=180 identical=180 different=0 wall=267.1s []
+perthread threads=8 gil=False jobs=180 identical=180 different=0 wall=266.5s []

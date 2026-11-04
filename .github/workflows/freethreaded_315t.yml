@@ -1,0 +1,91 @@
+name: free-threaded 3.15t
+
+# Builds the full PyMuPDF wheel (core + layout + pymupdf4llm) and onnxruntime for CPython 3.15t,
+# then runs freethreaded/verify against the official PyMuPDF 2.1 wheel. See freethreaded/README.md.
+
+on:
+  push:
+    branches: [python-3.15t]
+    paths: ['src/**', 'setup.py', 'freethreaded/**', '.github/workflows/freethreaded_315t.yml']
+  workflow_dispatch:
+
+env:
+  PBS_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.15.2%2B20261026-x86_64-unknown-linux-gnu-freethreaded-install_only.tar.gz
+  PBS_SHA256: 8da464230c40e9026e2a5abfdef34454d580b839f922f1f0add8fd2f06d98181
+  ORT_COMMIT: 6af1a932e2286d5c58166085d24c68783033edee
+
+jobs:
+  onnxruntime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ort-dist
+          key: ort-cp315t-${{ env.ORT_COMMIT }}-${{ hashFiles('freethreaded/patches/onnxruntime-*', 'freethreaded/scripts/build_onnxruntime.sh') }}
+      - name: Python 3.15t
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o pbs.tgz "$PBS_URL" && echo "$PBS_SHA256  pbs.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/py315t" && tar xzf pbs.tgz -C "$RUNNER_TEMP/py315t"
+      - name: Build onnxruntime
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          freethreaded/scripts/build_onnxruntime.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work-ort" "$(nproc)"
+          mkdir -p ort-dist && cp "$RUNNER_TEMP"/work-ort/build/Release/dist/*.whl ort-dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-cp315t
+          path: ort-dist/*.whl
+
+  pymupdf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python 3.15t
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/pbs.tgz" "$PBS_URL" && echo "$PBS_SHA256  $RUNNER_TEMP/pbs.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/py315t" && tar xzf "$RUNNER_TEMP/pbs.tgz" -C "$RUNNER_TEMP/py315t"
+      - name: Build PyMuPDF
+        run: freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pymupdf-cp315t
+          path: ${{ runner.temp }}/work/dist/*.whl
+
+  verify:
+    needs: [onnxruntime, pymupdf]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          merge-multiple: true
+      - name: Fonts for the generated corpus
+        run: sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+      # PyPI has no onnxruntime for 3.15, so the reference side is the official wheel on 3.14.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Environments
+        run: |
+          python -m venv "$RUNNER_TEMP/official"
+          "$RUNNER_TEMP/official/bin/pip" install -q pymupdf==2.1 onnxruntime==1.31.1 numpy pyyaml networkx psutil tabulate
+          curl -fsSL -o "$RUNNER_TEMP/pbs.tgz" "$PBS_URL" && echo "$PBS_SHA256  $RUNNER_TEMP/pbs.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/py315t" && tar xzf "$RUNNER_TEMP/pbs.tgz" -C "$RUNNER_TEMP/py315t"
+          "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
+          "$RUNNER_TEMP/ours/bin/pip" install -q --find-links wheels wheels/pymupdf-*.whl psutil tabulate
+          "$RUNNER_TEMP/ours/bin/pip" list
+      - name: Verify
+        shell: bash
+        run: freethreaded/verify/run_all.sh "$RUNNER_TEMP/official/bin/python" "$RUNNER_TEMP/ours/bin/python" "$RUNNER_TEMP/verify-work" 2>&1 | tee verify.txt
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-log
+          path: verify.txt

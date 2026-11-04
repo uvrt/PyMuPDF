@@ -1,0 +1,14 @@
+ours: GIL off, 2.1
+pages=189 calls=9165 features_secs=1.623 total_secs=95.41
+pages=142 calls=7326 features_secs=1.341 total_secs=91.75
+python=3.15.2 gil=False pages=189 calls=9165 fields/call=112 exact=9165 mismatched=0 {}
+python=3.15.2 gil=False pages=142 calls=7326 fields/call=112 exact=7326 mismatched=0 {}
+threads=8 gil=False jobs=567 calls=27495 mismatched=0 wall=13.4s
+threads=8 gil=False jobs=567 calls=27495 mismatched=0 wall=7.5s
+perthread threads=1 gil=False jobs=180 identical=180 different=0 wall=252.9s []
+perthread threads=4 gil=False jobs=180 identical=180 different=0 wall=253.7s []
+perthread threads=8 gil=False jobs=180 identical=180 different=0 wall=282.6s []
+perthread threads=1 gil=False jobs=180 identical=180 different=0 wall=270.7s []
+perthread threads=4 gil=False jobs=180 identical=180 different=0 wall=310.5s []
+perthread threads=8 gil=False jobs=180 identical=180 different=0 wall=229.9s []
+ALL CHECKS PASSED

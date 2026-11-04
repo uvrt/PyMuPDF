@@ -1,3 +1,5 @@
+> **Branch `python-3.15t`:** full PyMuPDF 2.1 (with layout and pymupdf4llm) for free-threaded CPython 3.15t, GIL off. See [freethreaded/README.md](freethreaded/README.md).
+
 <p align="center">
   <a href="https://pymupdf.io?utm_source=github&utm_medium=referral&utm_campaign=pymupdf_github&utm_content=logo&utm_term=website">
     <img loading="lazy" alt="PyMuPDF" src="https://pymupdf.pro/images/py-mupdf-github-icon.png" width="96px" alt="PyMuPDF logo"/>

@@ -1,0 +1,28 @@
+diff --git a/cmake/onnxruntime_unittests.cmake b/cmake/onnxruntime_unittests.cmake
+index 92ce44f..01ca672 100644
+--- a/cmake/onnxruntime_unittests.cmake
++++ b/cmake/onnxruntime_unittests.cmake
+@@ -2010,8 +2010,10 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
+     # --expected-numpy-version assert meaningful. Both import failure AND mismatch FAIL LOUD.
+     if(Python_VERSION VERSION_LESS 3.11)
+       set(_numpy_pinned_version 2.2.6)
+-    else()
++    elseif(Python_VERSION VERSION_LESS 3.15)
+       set(_numpy_pinned_version 2.4.2)
++    else()
++      set(_numpy_pinned_version 2.5.4)
+     endif()
+     execute_process(
+       COMMAND ${Python_EXECUTABLE} -c "import numpy,sys; sys.stdout.write(numpy.__version__)"
+diff --git a/setup.py b/setup.py
+index fcde855..80a8232 100644
+--- a/setup.py
++++ b/setup.py
+@@ -651,6 +651,7 @@ classifiers = [
+     "Programming Language :: Python :: 3.12",
+     "Programming Language :: Python :: 3.13",
+     "Programming Language :: Python :: 3.14",
++    "Programming Language :: Python :: 3.15",
+ ]
+ 
+ if enable_training or enable_training_apis:

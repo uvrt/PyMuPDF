@@ -280,7 +280,6 @@ if PYMUPDF_SETUP_PATH_LAYOUT:
             'numpy',
             'onnxruntime',
             'pyyaml',
-            f'pymupdf-layout=={version_p}',
             ]
 
     if PYMUPDF_SETUP_REQUIRE_LAYOUT_4LLM != '0':
