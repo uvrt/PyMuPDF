@@ -1,5 +1,5 @@
---- a/scripts/wrap/cpp.py	2026-11-04 10:30:36
-+++ b/scripts/wrap/cpp.py	2026-11-04 10:30:50
+--- a/scripts/wrap/cpp.py
++++ b/scripts/wrap/cpp.py
 @@ -1608,6 +1608,11 @@
  
              /** Internal use only. Returns `fz_context*` for use by current thread. */
@@ -78,8 +78,8 @@
              FZ_FUNCTION fz_context* {rename.internal("context_get")}()
              {{
                  if (s_state.m_multithreaded)
---- a/scripts/wrap/swig.py	2026-11-04 10:30:36
-+++ b/scripts/wrap/swig.py	2026-11-04 10:30:50
+--- a/scripts/wrap/swig.py
++++ b/scripts/wrap/swig.py
 @@ -421,11 +421,12 @@
                      #endif
                      if (m_description == "warning")
@@ -95,8 +95,8 @@
                      }}
                      else
                      {{
---- a/source/fitz/memory.c	2026-11-04 10:33:59
-+++ b/source/fitz/memory.c	2026-11-04 10:33:59
+--- a/source/fitz/memory.c
++++ b/source/fitz/memory.c
 @@ -41,11 +41,27 @@
   * except the _no_throw family which instead silently returns NULL.
   */
@@ -151,8 +151,8 @@
  		fz_lock(ctx, FZ_LOCK_ALLOC);
  		ctx->alloc.free(ctx->alloc.user, p);
  		fz_unlock(ctx, FZ_LOCK_ALLOC);
---- a/source/fitz/font.c	2026-11-04 10:33:59
-+++ b/source/fitz/font.c	2026-11-04 10:33:59
+--- a/source/fitz/font.c
++++ b/source/fitz/font.c
 @@ -1320,20 +1320,35 @@
  	if (gid < 0 || gid >= font->glyph_count || !font->use_glyph_bbox)
  		return NULL;
@@ -225,8 +225,8 @@
  		}
  		fz_ft_lock(ctx);
  		idx = FT_Get_Char_Index(font->ft_face, ucs);
---- a/source/fitz/draw-glyph.c	2026-11-04 10:37:38
-+++ b/source/fitz/draw-glyph.c	2026-11-04 10:37:38
+--- a/source/fitz/draw-glyph.c
++++ b/source/fitz/draw-glyph.c
 @@ -356,7 +356,14 @@
  	{
  		if (is_ft_font)
@@ -250,3 +250,149 @@
  				{
  					/* We had to unlock. Someone else might
  					 * have rendered in the meantime */
+--- a/source/fitz/harfbuzz.c
++++ b/source/fitz/harfbuzz.c
+@@ -124,7 +124,14 @@
+  * problems that for now, we'll just forbid it.
+  */
+ 
+-static fz_context *fz_hb_secret = NULL;
++/* Free-threading patch: per thread, so that contexts with different
++ * FZ_LOCK_FREETYPE locks don't overwrite each other's allocator context. */
++#if defined(_MSC_VER)
++#define FZ_THREAD_LOCAL __declspec(thread)
++#else
++#define FZ_THREAD_LOCAL __thread
++#endif
++static FZ_THREAD_LOCAL fz_context *fz_hb_secret = NULL;
+ 
+ static void set_hb_context(fz_context *ctx)
+ {
+--- a/source/fitz/load-jpx.c
++++ b/source/fitz/load-jpx.c
+@@ -99,7 +99,16 @@
+  * threading systems.
+  */
+ 
+-static fz_context *fz_opj_secret = NULL;
++/* Free-threading patch: the allocator context is per thread. It was the
++ * only state shared between OpenJPEG calls (each call has its own codec,
++ * stream and image), so JPX coding no longer takes FZ_LOCK_FREETYPE and
++ * runs in parallel. */
++#if defined(_MSC_VER)
++#define FZ_THREAD_LOCAL __declspec(thread)
++#else
++#define FZ_THREAD_LOCAL __thread
++#endif
++static FZ_THREAD_LOCAL fz_context *fz_opj_secret = NULL;
+ 
+ static void set_opj_context(fz_context *ctx)
+ {
+@@ -113,16 +122,12 @@
+ 
+ void fz_opj_lock(fz_context *ctx)
+ {
+-	fz_ft_lock(ctx);
+-
+ 	set_opj_context(ctx);
+ }
+ 
+-void fz_opj_unlock(fz_context *ctx)
++void fz_opj_unlock(fz_context *ctx FZ_UNUSED)
+ {
+ 	set_opj_context(NULL);
+-
+-	fz_ft_unlock(ctx);
+ }
+ 
+ void *fz_opj_malloc(size_t size)
+--- a/source/fitz/leptonica-wrap.c
++++ b/source/fitz/leptonica-wrap.c
+@@ -28,11 +28,20 @@
+ 
+ /* When we build with our own leptonica, we want to intercept malloc/free etc.
+  * Unfortunately we have to use a nasty global here. */
+-static fz_context *leptonica_mem = NULL;
++/* Free-threading patch: the context is per thread, so several threads can use
++ * Leptonica at once. The memory manager is installed once and stays: outside
++ * fz_set/clear_leptonica_mem (no context) it uses malloc/free, as before. */
++#if defined(_MSC_VER)
++#define FZ_THREAD_LOCAL __declspec(thread)
++#else
++#define FZ_THREAD_LOCAL __thread
++#endif
++static FZ_THREAD_LOCAL fz_context *leptonica_mem = NULL;
++static int leptonica_installed = 0;
+ 
+ void *leptonica_malloc(size_t size)
+ {
+-	void *ret = Memento_label(fz_malloc_no_throw(leptonica_mem, size), "leptonica_malloc");
++	void *ret = Memento_label((leptonica_mem ? fz_malloc_no_throw(leptonica_mem, size) : malloc(size)), "leptonica_malloc");
+ #ifdef DEBUG_ALLOCS
+ 	printf("%d LEPTONICA_MALLOC(%p) %d -> %p\n", event++, leptonica_mem, (int)size, ret);
+ 	fflush(stdout);
+@@ -46,7 +55,10 @@
+ 	printf("%d LEPTONICA_FREE(%p) %p\n", event++, leptonica_mem, ptr);
+ 	fflush(stdout);
+ #endif
+-	fz_free(leptonica_mem, ptr);
++	if (leptonica_mem)
++		fz_free(leptonica_mem, ptr);
++	else
++		free(ptr);
+ }
+ 
+ void *leptonica_calloc(size_t numelm, size_t elemsize)
+@@ -65,7 +77,7 @@
+ /* Not currently actually used */
+ void *leptonica_realloc(void *ptr, size_t blocksize)
+ {
+-	void *ret = fz_realloc_no_throw(leptonica_mem, ptr, blocksize);
++	void *ret = (leptonica_mem ? fz_realloc_no_throw(leptonica_mem, ptr, blocksize) : realloc(ptr, blocksize));
+ 
+ #ifdef DEBUG_ALLOCS
+ 	printf("%d LEPTONICA_REALLOC %p,%d -> %p\n", event++, ptr, (int)blocksize, ret);
+@@ -77,31 +89,28 @@
+ void
+ fz_set_leptonica_mem(fz_context *ctx)
+ {
+-	int die = 0;
++	int die = (leptonica_mem != NULL);
+ 
++	if (die)
++		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Attempt to use Leptonica twice at once on one thread!");
++	leptonica_mem = ctx;
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	die = (leptonica_mem != NULL);
+-	if (!die)
+-		leptonica_mem = ctx;
++	if (!leptonica_installed)
++	{
++		setPixMemoryManager(leptonica_malloc, leptonica_free);
++		leptonica_installed = 1;
++	}
+ 	fz_unlock(ctx, FZ_LOCK_ALLOC);
+-	if (die)
+-		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Attempt to use Leptonica from 2 threads at once!");
+-	setPixMemoryManager(leptonica_malloc, leptonica_free);
+ }
+ 
+ void
+ fz_clear_leptonica_mem(fz_context *ctx)
+ {
+-	int die = 0;
++	int die = (leptonica_mem == NULL);
+ 
+-	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	die = (leptonica_mem == NULL);
+-	if (!die)
+-		leptonica_mem = NULL;
+-	fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 	if (die)
+-		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Attempt to use Leptonica from 2 threads at once!");
+-	setPixMemoryManager(malloc, free);
++		fz_throw(ctx, FZ_ERROR_ARGUMENT, "Leptonica memory cleared without being set!");
++	leptonica_mem = NULL;
+ }
+ 
+ #endif /* HAVE_LEPTONICA */

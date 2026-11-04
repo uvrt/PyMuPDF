@@ -87,8 +87,10 @@ jobs:
           key: testdocs-${{ hashFiles('freethreaded/testdocs/manifest.json') }}
       - name: Fetch test PDFs
         run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
-      - name: Fonts for the generated corpus
-        run: sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+      - name: Fonts for the generated corpus, Tesseract data
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei tesseract-ocr-eng
+          echo "TESSDATA=$(dirname "$(find /usr/share/tesseract-ocr -name eng.traineddata | head -1)")" >> "$GITHUB_ENV"
       # PyPI has no onnxruntime for 3.15, so the reference side is the official wheel on 3.14.
       - uses: actions/setup-python@v5
         with:
