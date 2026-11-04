@@ -85,7 +85,8 @@ for n in NS:
     with ThreadPoolExecutor(n) as ex:
         list(ex.map(lambda _: job(0), range(n)))  # warm up each worker's model
         with _all_lock:
-            _all.clear()
+            for s in _all:  # threads keep their dict: empty it, don't drop it
+                s.clear()
         p0, t0 = time.process_time(), time.perf_counter()
         list(ex.map(job, range(JOBS)))
         wall, cpu = time.perf_counter() - t0, time.process_time() - p0
