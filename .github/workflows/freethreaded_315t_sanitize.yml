@@ -49,7 +49,7 @@ jobs:
           cc --version | head -1
           freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work"
           "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
-          "$RUNNER_TEMP/ours/bin/pip" install -q "$RUNNER_TEMP"/work/dist/pymupdf-*.whl
+          "$RUNNER_TEMP/ours/bin/pip" install -q --no-deps "$RUNNER_TEMP"/work/dist/pymupdf-*.whl   # onnxruntime: not needed here
       - name: Test PDFs
         uses: actions/cache@v4
         with:
