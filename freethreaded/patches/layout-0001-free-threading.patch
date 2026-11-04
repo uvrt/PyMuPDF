@@ -1,11 +1,11 @@
 diff --git a/source/layout/__init__.py b/source/layout/__init__.py
-index 06415c6..50ea3ef 100644
+index 06415c6..743a41a 100644
 --- a/source/layout/__init__.py
 +++ b/source/layout/__init__.py
 @@ -1,5 +1,6 @@
  from . import DocumentLayoutAnalyzer
  from . import onnx
-+from .onnx import common_util
++from .onnx import common_util as _onnx_common_util
  from . import pymupdf_util
  
  from pymupdf.layout._build import git_sha
@@ -44,7 +44,7 @@ index 06415c6..50ea3ef 100644
 +    if per_thread and threading.current_thread() is not threading.main_thread():
 +        # pymupdf4llm imports us lazily, possibly on a worker thread; that
 +        # thread's model must not get onnxruntime's default thread pools.
-+        common_util.session_settings.intra_op_threads = ort_threads
++        _onnx_common_util.session_settings.intra_op_threads = ort_threads
      MODEL = DocumentLayoutAnalyzer.get_model()
  
 -    def _get_layout(*args, **kwargs):
@@ -60,7 +60,7 @@ index 06415c6..50ea3ef 100644
 +                # sessions get few threads (a main-thread model keeps
 +                # onnxruntime's defaults). Set for this thread only and left
 +                # set, so sessions the model creates later get it too.
-+                common_util.session_settings.intra_op_threads = ort_threads
++                _onnx_common_util.session_settings.intra_op_threads = ort_threads
 +                model = local.model = DocumentLayoutAnalyzer.get_model()
 +            return model.predict(*args, **kwargs)
 +
