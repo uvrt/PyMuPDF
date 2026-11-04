@@ -9,8 +9,10 @@ with 1 thread:
 - wall and CPU grow     -> spinning, oversubscription or cache/memory contention;
 - both flat             -> the stage scales.
 "python" is to_markdown time outside the instrumented stages.
+"gc" is time inside cyclic garbage collections (gc.callbacks, all threads; free-threaded collections
+stop the world, so every other thread waits as well). PROFILE_GC=off disables the collector.
 """
-import json, os, sys, threading, time
+import gc, json, os, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
 import onnxruntime as ort
@@ -57,6 +59,20 @@ def _wrap(owner, name, stage):
     setattr(owner, name, wrapper)
 
 
+_gc = {"n": 0, "secs": 0.0, "t0": 0.0}
+
+
+def _gc_cb(phase, info):
+    if phase == "start":
+        _gc["t0"] = time.perf_counter()
+    else:
+        _gc["n"] += 1; _gc["secs"] += time.perf_counter() - _gc["t0"]
+
+
+gc.callbacks.append(_gc_cb)
+if os.environ.get("PROFILE_GC") == "off":
+    gc.disable()
+
 _wrap(ort.InferenceSession, "run", "onnx")
 _wrap(pymupdf.Page, "get_textpage", "stext")
 _wrap(pymupdf.features, "fz_features_for_region", "features")
@@ -77,7 +93,8 @@ def job(i):
 
 print(f"# python={sys.version.split()[0]} gil={sys._is_gil_enabled()} cpus={os.cpu_count()} "
       f"indep_ctx={os.environ.get('MUPDF_indep_ctx', '0')} per_thread_model={pymupdf._get_layout_per_thread} "
-      f"ort_threads={os.environ.get('PYMUPDF_LAYOUT_ORT_THREADS', '1')} files={len(files)} jobs={JOBS}", flush=True)
+      f"ort_threads={os.environ.get('PYMUPDF_LAYOUT_ORT_THREADS', '1')} gc={'on' if gc.isenabled() else 'off'} "
+      f"files={len(files)} jobs={JOBS}", flush=True)
 job(0)  # warm up the importing thread's model
 results = []
 base = None
@@ -87,6 +104,7 @@ for n in NS:
         with _all_lock:
             for s in _all:  # threads keep their dict: empty it, don't drop it
                 s.clear()
+        _gc.update(n=0, secs=0.0)
         p0, t0 = time.process_time(), time.perf_counter()
         list(ex.map(job, range(JOBS)))
         wall, cpu = time.perf_counter() - t0, time.process_time() - p0
@@ -101,12 +119,13 @@ for n in NS:
     if base is None:
         base = per_job
     print(f"threads={n} wall={wall:.2f}s docs/s={JOBS / wall:.2f} cpu_util={cpu / wall:.2f}/{n} "
-          f"job_wall={tw / JOBS:.3f}s job_cpu={tc / JOBS:.3f}s", flush=True)
+          f"job_wall={tw / JOBS:.3f}s job_cpu={tc / JOBS:.3f}s gc={_gc['n']}x/{_gc['secs']:.2f}s", flush=True)
     for k in sorted(per_job, key=lambda k: -per_job[k][0]):
         w, c = per_job[k]
         bw, bc = base.get(k, (w, c))
         print(f"    {k:11s} wall/job={w * 1000:8.1f}ms ({w / bw if bw else 0:4.2f}x)  "
               f"cpu/job={c * 1000:8.1f}ms ({c / bc if bc else 0:4.2f}x)  share={w / (tw / JOBS):5.1%}", flush=True)
-    results.append(dict(threads=n, wall=wall, docs_per_s=JOBS / wall, cpu=cpu, stages=stages, total=tot["total"]))
+    results.append(dict(threads=n, wall=wall, docs_per_s=JOBS / wall, cpu=cpu, stages=stages, total=tot["total"],
+                        gc_collections=_gc["n"], gc_secs=_gc["secs"]))
 if OUT:
     json.dump(results, open(OUT, "w"), indent=1)
