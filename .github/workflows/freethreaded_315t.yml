@@ -201,6 +201,7 @@ jobs:
         shell: bash
         run: |
           PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; cd prof; export PYTHONPATH="$V"
+          set +e +o pipefail   # diagnostics: head closing a pipe (grep: broken pipe) must not end the step
           for indep in 0 1; do
             MUPDF_indep_ctx=$indep perf record -q -F 499 -g -o oncpu$indep.data -- "$PY" -X perf "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
             perf report -i oncpu$indep.data --no-children --sort dso,sym --stdio 2>/dev/null | grep -v "^$" | head -80 > ../perf_oncpu_indep$indep.txt
