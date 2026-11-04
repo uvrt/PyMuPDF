@@ -232,11 +232,22 @@ jobs:
   soak:
     # Long run of the mixed workload on real PDFs; fails on a wrong result or on memory that
     # keeps growing (RSS slope over the second half). 60 minutes on push.
+    # Matrix to tell a leak from allocator fragmentation: the workload split by kind, and the mix
+    # with fewer glibc malloc arenas.
     needs: [onnxruntime, pymupdf]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: mix, mode: mix, arenas: ''}
+          - {name: md, mode: md, arenas: ''}
+          - {name: render, mode: render, arenas: ''}
+          - {name: mix-arena2, mode: mix, arenas: '2'}
     env:
       SOAK_MINUTES: ${{ inputs.soak_minutes || '60' }}
+      SOAK_MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -263,12 +274,13 @@ jobs:
       - name: Soak (${{ env.SOAK_MINUTES }} minutes, 4 threads)
         shell: bash   # -o pipefail: a failing soak must fail the step despite tee
         run: |
+          [ -n "${{ matrix.arenas }}" ] && export MALLOC_ARENA_MAX=${{ matrix.arenas }}
           cd "$RUNNER_TEMP" && PYTHONPATH="$GITHUB_WORKSPACE/freethreaded/verify" MAX_PAGES=4 \
             "$RUNNER_TEMP/ours/bin/python" "$GITHUB_WORKSPACE/freethreaded/verify/soak.py" "$GITHUB_WORKSPACE/docs" 4 "$SOAK_MINUTES" "$GITHUB_WORKSPACE/soak.csv" 2>&1 | tee "$GITHUB_WORKSPACE/soak.txt"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: soak
+          name: soak-${{ matrix.name }}
           path: |
             soak.txt
             soak.csv
