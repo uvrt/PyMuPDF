@@ -1,18 +1,24 @@
 name: free-threaded 3.15t sanitizers
 
-# Diagnoses crashes and data races in the 3.15t build: builds MuPDF and the bindings with
-# AddressSanitizer or ThreadSanitizer and runs the thread stress tests under them. The
-# sanitizer runtime is preloaded into the (uninstrumented) interpreter. Reports are uploaded.
+# Diagnoses crashes, leaks and data races in the 3.15t build:
+# - sanitize: MuPDF and the bindings built with AddressSanitizer (+ LeakSanitizer, report only)
+#   or ThreadSanitizer, the runtime preloaded into the release interpreter; thread stress for
+#   rendering, to_markdown with layout/onnxruntime, and the store-key regression test.
+# - tsan-python: the same under a CPython 3.15.2 built with --disable-gil
+#   --with-thread-sanitizer, so the interpreter's own synchronisation is visible to TSan.
+# Reports are uploaded.
 
 on:
   push:
     branches: [python-3.15t]
-    paths: ['freethreaded/patches/mupdf-*', '.github/workflows/freethreaded_315t_sanitize.yml']
+    paths: ['freethreaded/patches/mupdf-*', 'src/**', 'freethreaded/verify/**', '.github/workflows/freethreaded_315t_sanitize.yml']
   workflow_dispatch:
 
 env:
   PBS_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.15.2%2B20261026-x86_64-unknown-linux-gnu-freethreaded-install_only.tar.gz
   PBS_SHA256: 8da464230c40e9026e2a5abfdef34454d580b839f922f1f0add8fd2f06d98181
+  ORT_COMMIT: 6af1a932e2286d5c58166085d24c68783033edee
+  CPYTHON_TAG: v3.15.2
 
 jobs:
   sanitize:
@@ -49,7 +55,18 @@ jobs:
           cc --version | head -1
           freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work"
           "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
-          "$RUNNER_TEMP/ours/bin/pip" install -q --no-deps "$RUNNER_TEMP"/work/dist/pymupdf-*.whl   # onnxruntime: not needed here
+          "$RUNNER_TEMP/ours/bin/pip" install -q --no-deps "$RUNNER_TEMP"/work/dist/pymupdf-*.whl
+      - name: onnxruntime cp315t (built by the main workflow)
+        id: ort
+        uses: actions/cache/restore@v4
+        with:
+          path: ort-dist
+          key: ort-cp315t-${{ env.ORT_COMMIT }}-${{ hashFiles('freethreaded/patches/onnxruntime-*', 'freethreaded/scripts/build_onnxruntime.sh') }}
+      - name: Install onnxruntime and layout dependencies
+        if: steps.ort.outputs.cache-hit == 'true'
+        run: |
+          "$RUNNER_TEMP/ours/bin/pip" install -q ort-dist/*.whl
+          "$RUNNER_TEMP/ours/bin/pip" install -q --find-links ort-dist "$RUNNER_TEMP"/work/dist/pymupdf-*.whl
       - name: Test PDFs
         uses: actions/cache@v4
         with:
@@ -65,7 +82,10 @@ jobs:
           # libstdc++ too: python3.15t doesn't link it, and the sanitizer's __cxa_throw
           # interceptor needs the real one at start-up ("real___cxa_throw != 0" CHECK).
           export LD_PRELOAD="$(gcc -print-file-name=lib${{ matrix.san == 'address' && 'asan' || 'tsan' }}.so):$(g++ -print-file-name=libstdc++.so.6)"
-          export ASAN_OPTIONS="detect_leaks=0:abort_on_error=0:halt_on_error=1:log_path=$PWD/asan:print_summary=1"
+          # Leaks are reported (in the asan.* logs, summarised below) but don't fail the job:
+          # one-off allocations held until exit (MuPDF's base context, HarfBuzz statics) show too.
+          export ASAN_OPTIONS="detect_leaks=1:abort_on_error=0:halt_on_error=1:log_path=$PWD/asan:print_summary=1"
+          export LSAN_OPTIONS="exitcode=0:max_leaks=30"
           export TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:history_size=4:log_path=$PWD/tsan:second_deadlock_stack=1"
           "$PY" -I "$V/gen_corpus.py" corpus 0 24
           set +e; FAIL=0
@@ -81,6 +101,12 @@ jobs:
           MUPDF_indep_ctx=1 run "corpus indep=1" "$V/stress_render.py" corpus 4 1
           MAX_PAGES=4 run "docs indep=0" "$V/stress_render.py" ../docs 4 1
           MAX_PAGES=4 MUPDF_indep_ctx=1 run "docs indep=1" "$V/stress_render.py" ../docs 4 1
+          run "store keys across documents" "$V/regress_store_keys.py" 4
+          if "$PY" -c "import onnxruntime" 2>/dev/null; then
+            MAX_PAGES=3 run "to_markdown (layout, onnxruntime)" "$V/stress_md.py" corpus 4 1
+          else
+            echo "=== to_markdown skipped: onnxruntime cp315t not in the cache yet (run the main workflow)" | tee -a ../san.txt
+          fi
           ls -l
           if [ "${{ matrix.san }}" = thread ] && ls tsan.* >/dev/null 2>&1; then
             LD_PRELOAD= python3 -I "$V/tsan_triage.py" tsan.* | tee -a ../san.txt || FAIL=1
@@ -93,6 +119,8 @@ jobs:
           cd san 2>/dev/null || exit 0
           for f in asan.* tsan.*; do [ -f "$f" ] || continue; echo "##### $f"; grep -E "^(==|WARNING|ERROR|SUMMARY)|^    #[0-9]+ " "$f" | head -400; done > ../san-summary.txt || true
           grep -h "^SUMMARY" asan.* tsan.* 2>/dev/null | sort | uniq -c | sort -rn | head -60 | tee -a ../san.txt || true
+          # Leaks: biggest direct leaks with their allocation site, for review.
+          for f in asan.*; do [ -f "$f" ] || continue; grep -A8 "^Direct leak" "$f"; done 2>/dev/null | head -300 > ../leaks.txt || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -100,5 +128,79 @@ jobs:
           path: |
             san.txt
             san-summary.txt
+            leaks.txt
             san/asan.*
+            san/tsan.*
+
+  tsan-python:
+    # ThreadSanitizer with an instrumented interpreter: nothing in CPython is invisible to TSan,
+    # so no report needs filtering by stack frame (CPython's own suppressions apply).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq build-essential libssl-dev zlib1g-dev libbz2-dev liblzma-dev libffi-dev libsqlite3-dev \
+              fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+          sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: CPython ${{ env.CPYTHON_TAG }}, free-threaded, ThreadSanitizer
+        run: |
+          git clone -q --depth 1 --branch "$CPYTHON_TAG" https://github.com/python/cpython.git "$RUNNER_TEMP/cpython"
+          cd "$RUNNER_TEMP/cpython"
+          ./configure -q --disable-gil --with-thread-sanitizer --prefix="$RUNNER_TEMP/pytsan"
+          make -s -j"$(nproc)" && make -s install
+          cp Tools/tsan/suppressions_free_threading.txt "$RUNNER_TEMP/cpython-tsan-suppressions.txt"
+          "$RUNNER_TEMP/pytsan/bin/python3.15t" -c "import sys, sysconfig; print(sys.version, sysconfig.get_config_var('CONFIG_ARGS'))"
+      - name: Build PyMuPDF with -fsanitize=thread
+        run: |
+          export TSAN_OPTIONS="exitcode=0:report_bugs=0"   # the build itself runs Python; reports come later
+          mkdir -p "$RUNNER_TEMP/sanbin"
+          for c in cc gcc c++ g++; do
+            printf '#!/bin/sh\nexec /usr/bin/%s "$@" -g -fno-omit-frame-pointer -fsanitize=thread\n' "$c" > "$RUNNER_TEMP/sanbin/$c"
+            chmod +x "$RUNNER_TEMP/sanbin/$c"
+          done
+          export PATH="$RUNNER_TEMP/sanbin:$PATH"
+          freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/pytsan/bin/python3.15t" "$RUNNER_TEMP/work"
+          "$RUNNER_TEMP/pytsan/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
+          "$RUNNER_TEMP/ours/bin/pip" install -q --no-deps "$RUNNER_TEMP"/work/dist/pymupdf-*.whl
+      - name: Test PDFs
+        uses: actions/cache@v4
+        with:
+          path: docs
+          key: testdocs-${{ hashFiles('freethreaded/testdocs/manifest.json') }}
+      - name: Fetch test PDFs
+        run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
+      - name: Stress under ThreadSanitizer (instrumented interpreter)
+        shell: bash
+        run: |
+          PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; mkdir -p san && cd san
+          export PYTHONPATH="$V"
+          export TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:history_size=4:log_path=$PWD/tsan:second_deadlock_stack=1:suppressions=$RUNNER_TEMP/cpython-tsan-suppressions.txt"
+          "$PY" -I "$V/gen_corpus.py" corpus 0 16
+          set +e; FAIL=0
+          run() {  # label, args...
+            local l=$1 rc; shift
+            echo "=== $l" | tee -a ../san.txt
+            timeout 3600 "$PY" "$@" > out.txt 2>&1; rc=$?
+            tail -20 out.txt | tee -a ../san.txt; echo "exit $rc" | tee -a ../san.txt
+            [ $rc = 0 ] || [ $rc = 66 ] || FAIL=1
+          }
+          run "corpus" "$V/stress_render.py" corpus 4 1
+          MAX_PAGES=3 run "docs" "$V/stress_render.py" ../docs 4 1
+          run "store keys across documents" "$V/regress_store_keys.py" 4
+          if ls tsan.* >/dev/null 2>&1; then
+            grep -h "^SUMMARY" tsan.* | sort | uniq -c | sort -rn | head -40 | tee -a ../san.txt
+            python3 -I "$V/tsan_triage.py" tsan.* | tee -a ../san.txt || FAIL=1
+          else
+            echo "tsan: no reports" | tee -a ../san.txt
+          fi
+          exit $FAIL
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitize-tsan-python
+          path: |
+            san.txt
             san/tsan.*

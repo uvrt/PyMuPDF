@@ -104,16 +104,37 @@ catch(...) {
 
 
 /* Free threading: long MuPDF calls that don't touch Python objects run detached
-from the interpreter (JM_Detached), so that stop-the-world pauses, which a
-free-threaded cyclic GC needs, don't wait for them; on GIL builds this releases
-the GIL. MuPDF warnings and errors reach Python through DiagnosticCallback, which
-attaches again (patches/mupdf-0001). Loops that use the Python API for a long
-time call JM_safepoint(), which lets a pending stop-the-world proceed. */
+from the interpreter (JM_Detached, JM_detach/JM_attach), so that stop-the-world
+pauses, which a free-threaded cyclic GC needs, don't wait for them. MuPDF
+warnings and errors reach Python through DiagnosticCallback, which attaches
+again (patches/mupdf-0001). Loops that use the Python API for a long time call
+JM_safepoint(), which lets a pending stop-the-world proceed.
+On GIL builds all of these do nothing: those calls keep the GIL, exactly as
+upstream PyMuPDF, so code that shares a Document between threads there keeps
+working as before. */
+static inline PyThreadState* JM_detach()
+{
+#ifdef Py_GIL_DISABLED
+    return PyEval_SaveThread();
+#else
+    return NULL;
+#endif
+}
+
+static inline void JM_attach(PyThreadState* state)
+{
+#ifdef Py_GIL_DISABLED
+    PyEval_RestoreThread(state);
+#else
+    (void) state;
+#endif
+}
+
 struct JM_Detached
 {
     PyThreadState* m_state;
-    JM_Detached() : m_state(PyEval_SaveThread()) {}
-    ~JM_Detached() { PyEval_RestoreThread(m_state); }
+    JM_Detached() : m_state(JM_detach()) {}
+    ~JM_Detached() { JM_attach(m_state); }
     JM_Detached(const JM_Detached&) = delete;
     JM_Detached& operator=(const JM_Detached&) = delete;
 };
@@ -3648,7 +3669,7 @@ fz_stext_page* page_get_textpage(
     int use_bound = (clip == Py_None);
     fz_rect rect = use_bound ? fz_empty_rect : JM_rect_from_py(clip);
     fz_matrix ctm = JM_matrix_from_py(matrix);
-    PyThreadState* detached = PyEval_SaveThread();
+    PyThreadState* detached = JM_detach();
     fz_try(ctx) {
         // Default to page's rect if `clip` not specified, for #2048.
         if (use_bound) rect = fz_bound_page(ctx, page);
@@ -3659,7 +3680,7 @@ fz_stext_page* page_get_textpage(
     }
     fz_always(ctx) {
         fz_drop_device(ctx, dev);
-        PyEval_RestoreThread(detached);
+        JM_attach(detached);
     }
     fz_catch(ctx) {
         mupdf::internal_throw_exception(ctx);

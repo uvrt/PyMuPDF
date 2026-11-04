@@ -10,6 +10,8 @@
 #   1. corpus: 80 development PDFs and 60 held-out PDFs (seeded, reproducible)
 #   2. record every _features call and the reference markdown with the official build
 #   3. features bit-exact on all fields, development and held-out
+#   3b. store keys across documents (regress_store_keys.py): must pass on ours; the official
+#      wheel is run too, for information (upstream MuPDF has the bug)
 #   4. features thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
 #   5. rendering (RGB/GRAY/CMYK) + text extraction thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
 #   (No OCR: keep Tesseract off the machine. If PyMuPDF finds it, pymupdf4llm OCRs pages and
@@ -35,6 +37,9 @@ export PYTHONPATH="$V"   # for verify/common.py
 
 "$OURS" "$V/compare_features.py" rec_dev.pkl corpus/dev
 "$OURS" "$V/compare_features.py" rec_held.pkl corpus/heldout
+
+"$OURS" "$V/regress_store_keys.py" 8
+"$OFF" "$V/regress_store_keys.py" 1 || echo "(official wheel: fails as expected; the bug is in upstream MuPDF)"
 
 for indep in 0 1; do
     MUPDF_indep_ctx=$indep "$OURS" "$V/stress_features.py" rec_dev.pkl corpus/dev 8 3

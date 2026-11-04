@@ -8,6 +8,10 @@ on:
     branches: [python-3.15t]
     paths: ['src/**', 'setup.py', 'freethreaded/**', '.github/workflows/freethreaded_315t.yml']
   workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: 'Soak test length in minutes'
+        default: '180'
 
 env:
   PBS_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.15.2%2B20261026-x86_64-unknown-linux-gnu-freethreaded-install_only.tar.gz
@@ -203,7 +207,17 @@ jobs:
             MUPDF_indep_ctx=$indep perf record -q -e sched:sched_switch -g -o offcpu$indep.data -- "$PY" "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
             perf report -i offcpu$indep.data --no-children --sort sym --stdio -G 2>/dev/null | grep -v "^$" | head -200 > ../perf_offcpu_indep$indep.txt
           done
-          ls -l ../perf_*.txt
+          # Rendering + text (stress_render), default vs independent contexts: on-CPU by symbol,
+          # and where threads block (sched_switch call graphs: locks show as futex waits).
+          for indep in 0 1; do
+            MUPDF_indep_ctx=$indep perf record -q -F 999 -g -o r_on$indep.data -- "$PY" "$V/stress_render.py" corpus 4 1 >/dev/null 2>&1
+            perf report -i r_on$indep.data --no-children --sort dso,sym --stdio -g none 2>/dev/null | grep -v "^$" | grep -v "^#" | head -60 > ../perf_render_oncpu_indep$indep.txt
+            MUPDF_indep_ctx=$indep perf record -q -e sched:sched_switch -g -o r_off$indep.data -- "$PY" "$V/stress_render.py" corpus 4 1 >/dev/null 2>&1
+            perf report -i r_off$indep.data --no-children --sort sym --stdio -G 2>/dev/null | grep -v "^$" | head -250 > ../perf_render_offcpu_indep$indep.txt
+          done
+          # onnxruntime threads per process during to_markdown at 4 threads (expect none beyond the 4 workers)
+          ( "$PY" "$V/profile_md.py" corpus 8 4 >/dev/null 2>&1 & P=$!; sleep 25; ps -T -p $P -o tid,comm,pcpu | sort -k3 -rn | head -40; wait $P ) > ../threads_md.txt 2>&1
+          ls -l ../perf_*.txt ../threads_md.txt
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -211,5 +225,50 @@ jobs:
           path: |
             profile.txt
             perf_*.txt
+            threads_md.txt
             sampling_*.txt
             prof/*.json
+
+  soak:
+    # Long run of the mixed workload on real PDFs; fails on a wrong result or on memory that
+    # keeps growing (RSS slope over the second half). 60 minutes on push.
+    needs: [onnxruntime, pymupdf]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SOAK_MINUTES: ${{ inputs.soak_minutes || '60' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: onnxruntime-cp315t
+          path: wheels
+      - uses: actions/download-artifact@v4
+        with:
+          name: pymupdf-cp315t-base
+          path: wheels
+      - name: Real-world test PDFs
+        uses: actions/cache@v4
+        with:
+          path: docs
+          key: testdocs-${{ hashFiles('freethreaded/testdocs/manifest.json') }}
+      - name: Fetch test PDFs
+        run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
+      - name: Environment
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/pbs.tgz" "$PBS_URL" && echo "$PBS_SHA256  $RUNNER_TEMP/pbs.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/py315t" && tar xzf "$RUNNER_TEMP/pbs.tgz" -C "$RUNNER_TEMP/py315t"
+          "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
+          "$RUNNER_TEMP/ours/bin/pip" install -q --find-links wheels wheels/pymupdf-*.whl psutil
+      - name: Soak (${{ env.SOAK_MINUTES }} minutes, 4 threads)
+        shell: bash   # -o pipefail: a failing soak must fail the step despite tee
+        run: |
+          cd "$RUNNER_TEMP" && PYTHONPATH="$GITHUB_WORKSPACE/freethreaded/verify" MAX_PAGES=4 \
+            "$RUNNER_TEMP/ours/bin/python" "$GITHUB_WORKSPACE/freethreaded/verify/soak.py" "$GITHUB_WORKSPACE/docs" 4 "$SOAK_MINUTES" "$GITHUB_WORKSPACE/soak.csv" 2>&1 | tee "$GITHUB_WORKSPACE/soak.txt"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak
+          path: |
+            soak.txt
+            soak.csv

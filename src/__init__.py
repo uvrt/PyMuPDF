@@ -4451,9 +4451,9 @@ class Document:
         if tp > srcCount - 1:
             tp = srcCount - 1
         store = _thread_mupdf_messages()
-        len0 = len(store)
+        count0 = store.count
         doc = JM_convert_to_pdf(fz_doc, fp, tp, rotate)
-        for text in store[len0:]:
+        for text in store.since(count0):
             message(f'{text}')
         return doc
 
@@ -11449,9 +11449,9 @@ class Page:
                 w, h = h, w
             val = Rect(0, 0, w, h)
             mupdf.fz_flush_warnings()
-            store = _thread_mupdf_messages()
-            if store:
-                message(store[-1])
+            last = _thread_mupdf_messages().last()
+            if last is not None:
+                message(last)
         
         return val
 
@@ -18383,7 +18383,10 @@ FZ_MIN_INF_RECT = -0x80000000
 FZ_MAX_INF_RECT = 0x7fffff80
 
 JM_annot_id_stem = "fitz"
-JM_mupdf_warnings_store = []
+# MuPDF warnings and errors, newest last. Bounded, so a long-lived process keeps
+# the most recent _MUPDF_MESSAGES_MAX instead of growing without limit.
+_MUPDF_MESSAGES_MAX = 10000
+JM_mupdf_warnings_store = collections.deque(maxlen=_MUPDF_MESSAGES_MAX)
 JM_mupdf_show_errors = 1
 JM_mupdf_show_warnings = 0
 
@@ -21871,10 +21874,32 @@ def JM_merge_resources( page, temp_res):
 _mupdf_messages = threading.local()
 
 
+class _ThreadMessages:
+    """
+    One thread's MuPDF messages: the newest _MUPDF_MESSAGES_MAX, plus a count of
+    all messages ever added, so that callers can take the messages added since
+    a point (since()) even after old ones were dropped.
+    """
+    def __init__(self):
+        self.items = collections.deque(maxlen=_MUPDF_MESSAGES_MAX)
+        self.count = 0
+
+    def append(self, text):
+        self.items.append(text)
+        self.count += 1
+
+    def since(self, count):
+        n = min(self.count - count, len(self.items))
+        return list(self.items)[len(self.items) - n:] if n > 0 else []
+
+    def last(self):
+        return self.items[-1] if self.items else None
+
+
 def _thread_mupdf_messages():
     store = getattr(_mupdf_messages, 'store', None)
     if store is None:
-        store = _mupdf_messages.store = []
+        store = _mupdf_messages.store = _ThreadMessages()
     return store
 
 
@@ -26274,9 +26299,8 @@ class TOOLS:
 
     @staticmethod
     def reset_mupdf_warnings():
-        global JM_mupdf_warnings_store
-        JM_mupdf_warnings_store = list()
-        _mupdf_messages.store = []
+        JM_mupdf_warnings_store.clear()
+        _mupdf_messages.store = _ThreadMessages()
         
     @staticmethod
     def set_aa_level(level):
