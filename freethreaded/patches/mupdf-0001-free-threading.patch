@@ -113,6 +113,28 @@
                      try
                      {{
                          return self->_print( message);
+--- a/source/fitz/context.c
++++ b/source/fitz/context.c
+@@ -312,14 +312,16 @@
+ 	if (!new_ctx)
+ 		return NULL;
+ 
++	/* First copy old context, including pointers to shared contexts.
++	 * Free-threading patch: copy it with FZ_LOCK_ALLOC held, like
++	 * context_count and next_document_id, which other threads change in the
++	 * master context (fz_new_document_id) while this one copies it. */
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+ 	ctx->master->context_count++;
++	memcpy(new_ctx, ctx, sizeof (fz_context));
+ 	fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 	new_ctx->master = ctx->master;
+ 
+-	/* First copy old context, including pointers to shared contexts */
+-	memcpy(new_ctx, ctx, sizeof (fz_context));
+-
+ 	/* Reset error context to initial state. */
+ 	fz_init_error_context(new_ctx);
+ 
 --- a/source/fitz/memory.c
 +++ b/source/fitz/memory.c
 @@ -41,11 +41,27 @@
