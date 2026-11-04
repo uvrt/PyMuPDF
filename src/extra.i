@@ -1622,6 +1622,28 @@ int g_skip_quad_corrections = 0;
 int g_subset_fontnames = 0;
 int g_small_glyph_heights = 0;
 
+/* Per-thread overrides of the two settings above (-1: use the process-wide
+value), so that find_tables() can change them for its own work without
+affecting text extraction in other threads. */
+static thread_local int t_skip_quad_corrections = -1;
+static thread_local int t_small_glyph_heights = -1;
+
+static inline int skip_quad_corrections()
+{
+    return (t_skip_quad_corrections >= 0) ? t_skip_quad_corrections : g_skip_quad_corrections;
+}
+
+static inline int small_glyph_heights()
+{
+    return (t_small_glyph_heights >= 0) ? t_small_glyph_heights : g_small_glyph_heights;
+}
+
+void set_thread_text_overrides(int small, int skip)
+{
+    t_small_glyph_heights = small;
+    t_skip_quad_corrections = skip;
+}
+
 void set_skip_quad_corrections(int on)
 {
     g_skip_quad_corrections = on;
@@ -1679,7 +1701,7 @@ typedef jm_lineart_device jm_tracedraw_device;
 // need own versions of ascender / descender
 static float JM_font_ascender(fz_font* font)
 {
-    if (g_skip_quad_corrections)
+    if (skip_quad_corrections())
     {
         return 0.8f;
     }
@@ -1688,7 +1710,7 @@ static float JM_font_ascender(fz_font* font)
 
 static float JM_font_descender(fz_font* font)
 {
-    if (g_skip_quad_corrections)
+    if (skip_quad_corrections())
     {
         return -0.2f;
     }
@@ -2174,7 +2196,7 @@ mupdf::FzDevice JM_new_texttrace_device(PyObject* out)
 static fz_quad
 JM_char_quad(fz_stext_line *line, fz_stext_char *ch)
 {
-    if (g_skip_quad_corrections) {  // no special handling
+    if (skip_quad_corrections()) {  // no special handling
         return ch->quad;
     }
     if (line->wmode) {  // never touch vertical write mode
@@ -2185,7 +2207,7 @@ JM_char_quad(fz_stext_line *line, fz_stext_char *ch)
     float dsc = JM_font_descender(font);
     float c, s, fsize = ch->size;
     float asc_dsc = asc - dsc + FLT_EPSILON;
-    if (asc_dsc >= 1 && g_small_glyph_heights == 0) {  // no problem
+    if (asc_dsc >= 1 && small_glyph_heights() == 0) {  // no problem
        return ch->quad;
     }
     if (asc < 1e-3) {  // probably Tesseract glyphless font
@@ -2194,7 +2216,7 @@ JM_char_quad(fz_stext_line *line, fz_stext_char *ch)
         asc_dsc = 1.0f;
     }
 
-    if (g_small_glyph_heights || asc_dsc < 1) {
+    if (small_glyph_heights() || asc_dsc < 1) {
         dsc = dsc / asc_dsc;
         asc = asc / asc_dsc;
     }
@@ -4528,6 +4550,7 @@ static fz_quad JM_char_quad( fz_stext_line *line, fz_stext_char *ch);
 void JM_print_stext_page_as_text(mupdf::FzBuffer& res, mupdf::FzStextPage& page);
 
 void set_skip_quad_corrections(int on);
+void set_thread_text_overrides(int small, int skip);
 void set_subset_fontnames(int on);
 void set_small_glyph_heights(int on);
 

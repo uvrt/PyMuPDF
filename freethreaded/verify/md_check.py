@@ -9,6 +9,7 @@ VARIANT = sys.argv[5] if len(sys.argv) > 5 else "perthread"
 if VARIANT == "shipped":
     os.environ["PYMUPDF_LAYOUT_PER_THREAD"] = "0"
 import pymupdf, pymupdf.layout, pymupdf4llm
+from common import page_numbers
 assert pymupdf._get_layout_per_thread == (VARIANT == "perthread"), VARIANT
 pdfdir, refdir = sys.argv[1], sys.argv[2]
 NS = [int(x) for x in sys.argv[3].split(",")]; ROUNDS = int(sys.argv[4])
@@ -17,7 +18,7 @@ ref = {f: open(os.path.join(refdir, f[:-4] + ".md")).read() for f in files}
 def job(i):
     f = files[i % len(files)]
     doc = pymupdf.open(os.path.join(pdfdir, f))
-    md = pymupdf4llm.to_markdown(doc, show_progress=False)
+    md = pymupdf4llm.to_markdown(doc, pages=page_numbers(doc), show_progress=False)
     doc.close()
     return f, md == ref[f]
 for n in NS:

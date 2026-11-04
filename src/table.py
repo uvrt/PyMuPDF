@@ -1719,16 +1719,11 @@ class Table:
         of the detecting call are restored for the duration (see __init__): the
         result is then the one an eager computation would have produced."""
         if self._header is _NO_HEADER_YET:
-            small, quads = self._header_flags
-            old_small = bool(pymupdf.TOOLS.set_small_glyph_heights())
-            old_quads = bool(pymupdf.TOOLS.unset_quad_corrections())
-            pymupdf.TOOLS.set_small_glyph_heights(small)
-            pymupdf.TOOLS.unset_quad_corrections(quads)
+            old = pymupdf._set_text_overrides(*self._header_flags)
             try:
                 self._header = self._get_header()
             finally:
-                pymupdf.TOOLS.set_small_glyph_heights(old_small)
-                pymupdf.TOOLS.unset_quad_corrections(old_quads)
+                pymupdf._set_text_overrides(*old)
         return self._header
 
     @header.setter
@@ -3140,8 +3135,10 @@ def find_tables(
     pymupdf._warn_layout_once()
     _CHARS_VAR.set([])
     _EDGES_VAR.set([])
-    old_small = bool(pymupdf.TOOLS.set_small_glyph_heights())  # save old value
-    pymupdf.TOOLS.set_small_glyph_heights(True)  # we need minimum bboxes
+    # We need minimum bboxes. Set for this thread only, so that text extraction
+    # in other threads is not affected.
+    old_overrides = pymupdf._get_text_overrides()
+    pymupdf._set_text_overrides(True, old_overrides[1])
     if page.rotation != 0:
         page, old_xref, old_rot, old_mediabox = page_rotation_set0(page)
     else:
@@ -3195,7 +3192,6 @@ def find_tables(
         "text_y_tolerance": text_y_tolerance,
     }
 
-    old_quad_corrections = pymupdf.TOOLS.unset_quad_corrections()
     try:
         if union:
             # Union path: fuse layout grids with line-based candidates instead
@@ -3213,10 +3209,10 @@ def find_tables(
                 # Layout results depend on the quad correction setting.
                 # Importing pymupdf4llm disables corrections globally, so do
                 # the same here to be independent of that import.
-                pymupdf.TOOLS.unset_quad_corrections(True)
+                pymupdf._set_text_overrides(True, True)
                 page.get_layout()
                 if page.layout_information:
-                    pymupdf.TOOLS.unset_quad_corrections(True)
+                    pymupdf._set_text_overrides(True, True)
                     boxes = [
                         pymupdf.Rect(b[:4]) for b in page.layout_information if b[-1] == "table"
                     ]
@@ -3290,10 +3286,9 @@ def find_tables(
                 del page._table_drawings_cache
             except Exception:
                 pass
-        pymupdf.TOOLS.set_small_glyph_heights(old_small)
         if old_xref is not None:
             page = page_rotation_reset(page, old_xref, old_rot, old_mediabox)
-        pymupdf.TOOLS.unset_quad_corrections(old_quad_corrections)
+        pymupdf._set_text_overrides(*old_overrides)
 
     # Snapshot the page's characters onto each table so a later find_tables()
     # call's CHARS reset cannot leak into this table's extract(). One shallow

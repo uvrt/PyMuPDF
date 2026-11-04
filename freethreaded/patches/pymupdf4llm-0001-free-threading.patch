@@ -1,0 +1,240 @@
+diff --git a/src/helpers/document_layout.py b/src/helpers/document_layout.py
+index a484453..dbc9fd9 100644
+--- a/src/helpers/document_layout.py
++++ b/src/helpers/document_layout.py
+@@ -38,7 +38,33 @@ OFFICE_FORMATS = {"DOCX", "XLSX", "PPTX", "DOC", "XLS", "PPT", "HWPX", "HWP"}
+ pymupdf.TOOLS.unset_quad_corrections(True)
+ _LAYOUT_LOCK = threading.RLock()
+ 
+-INFO_MESSAGES = io.StringIO()
++class _ThreadMessages:
++    """A file-like object holding a separate io.StringIO per thread, so that
++    documents parsed concurrently don't mix their messages."""
++
++    def __init__(self):
++        self._local = threading.local()
++
++    def _buffer(self):
++        buf = getattr(self._local, "buffer", None)
++        if buf is None:
++            buf = self._local.buffer = io.StringIO()
++        return buf
++
++    def write(self, text):
++        return self._buffer().write(text)
++
++    def flush(self):
++        pass
++
++    def getvalue(self):
++        return self._buffer().getvalue()
++
++    def clear(self):
++        self._local.buffer = io.StringIO()
++
++
++INFO_MESSAGES = _ThreadMessages()
+ GRAPHICS_TEXT = "\n![](%s)\n"
+ 
+ FLAGS = (
+@@ -54,7 +80,14 @@ BULLETS = tuple(utils.BULLETS)
+ 
+ 
+ def get_layout_locked(page: pymupdf.Page, **kwargs):
+-    """Serialize PyMuPDF layout inference, which uses process-global state."""
++    """Serialize PyMuPDF layout inference, which uses process-global state.
++
++    Not needed when pymupdf.layout gives each thread its own model (the
++    default on free-threaded Python).
++    """
++    pymupdf._optional_import("layout")  # sets _get_layout_per_thread
++    if getattr(pymupdf, "_get_layout_per_thread", False):
++        return page.get_layout(**kwargs)
+     with _LAYOUT_LOCK:
+         return page.get_layout(**kwargs)
+ 
+@@ -1742,8 +1775,7 @@ def parse_document(
+         print()
+         pymupdf.message("=== Document parser messages ===")
+         pymupdf.message(msg_text.strip())
+-    INFO_MESSAGES.truncate()  # empty the file-like object
+-    INFO_MESSAGES.seek(0)  # reset the file pointer to the beginning
++    INFO_MESSAGES.clear()
+     # Update title/section-header boxes with html header tags
+     update_header_tags(document.pages, header_fontsizes)
+     return document
+diff --git a/src/ocr/analyze_page.py b/src/ocr/analyze_page.py
+index 1c219b8..e98c57a 100644
+--- a/src/ocr/analyze_page.py
++++ b/src/ocr/analyze_page.py
+@@ -1,5 +1,6 @@
+ import os
+ import pprint
++import threading
+ from pathlib import Path
+ 
+ import numpy as np
+@@ -31,21 +32,23 @@ OCR_MODEL_THRESHOLD = int(os.getenv("PYMUPDF_OCR_MODEL_THRESHOLD", 93)) / 100
+ 
+ # The model file is in our folder!
+ _MODEL_PATH = Path(__file__).parent / "ocr_decision_model.onnx"
+-_session = None
+-_input_name: str = ""
++_session = None  # (InferenceSession, input name), published together
++_session_lock = threading.Lock()
+ 
+ 
+ def _get_session():
+-    global _session, _input_name
++    global _session
+     if _session is None:
+-        import onnxruntime as ort  # deferred: expensive import
+-
+-        opts = ort.SessionOptions()
+-        opts.inter_op_num_threads = 1
+-        opts.intra_op_num_threads = 1
+-        _session = ort.InferenceSession(str(_MODEL_PATH), opts)
+-        _input_name = _session.get_inputs()[0].name
+-    return _session, _input_name
++        with _session_lock:
++            if _session is None:
++                import onnxruntime as ort  # deferred: expensive import
++
++                opts = ort.SessionOptions()
++                opts.inter_op_num_threads = 1
++                opts.intra_op_num_threads = 1
++                session = ort.InferenceSession(str(_MODEL_PATH), opts)
++                _session = session, session.get_inputs()[0].name
++    return _session
+ 
+ 
+ def predict_ocr_probability(features: dict) -> float:
+diff --git a/src/ocr/exec_ocr_interface.py b/src/ocr/exec_ocr_interface.py
+index f4e969d..86a0dcc 100644
+--- a/src/ocr/exec_ocr_interface.py
++++ b/src/ocr/exec_ocr_interface.py
+@@ -1,4 +1,5 @@
+ import inspect
++import threading
+ 
+ import numpy as np
+ import pymupdf
+@@ -10,7 +11,18 @@ try:
+ except Exception as e:
+     TESSDATA = None
+ 
+-FONT = pymupdf.Font("cjk")  # this is the "Droid Sans Fallback" font
++# The "Droid Sans Fallback" font, one per thread: a MuPDF font belongs to the
++# fz_context it was made in (with MUPDF_indep_ctx=1, one per thread).
++_FONTS = threading.local()
++
++
++def _font():
++    font = getattr(_FONTS, "font", None)
++    if font is None:
++        font = _FONTS.font = pymupdf.Font("cjk")
++    return font
++
++
+ FONTNAME = "myfont"  # its reference name in the page
+ REPLACEMENT_UNICODE = chr(0xFFFD)  # Unicode Replacement Character
+ STROKED_TEXT = pymupdf.mupdf.FZ_STEXT_STROKED
+@@ -33,7 +45,7 @@ def adjust_width(text, fontsize, rect):
+     We must ensure that inserted text has the width of the rectangle.
+     The computed matrix will do this scaling.
+     """
+-    tl = FONT.text_length(text, fontsize)
++    tl = _font().text_length(text, fontsize)
+     if tl > 0:
+         return pymupdf.Matrix(rect.width / tl, 1)
+     return pymupdf.Matrix(1, 1)
+@@ -173,7 +185,7 @@ def exec_ocr_detection(page, det_only, dpi=150, language="eng", keep_ocr_text=Fa
+         return
+ 
+     # insert the OCR font into the page
+-    page.insert_font(fontname=FONTNAME, fontbuffer=FONT.buffer)
++    page.insert_font(fontname=FONTNAME, fontbuffer=_font().buffer)
+ 
+     for irect, text in tess_results:
+         # this is the line box
+@@ -270,7 +282,7 @@ def exec_ocr_full(page, full_ocr, dpi=150, language=None, keep_ocr_text=False):
+         )
+ 
+     # insert the font into the page if not already present
+-    page.insert_font(fontname=FONTNAME, fontbuffer=FONT.buffer)
++    page.insert_font(fontname=FONTNAME, fontbuffer=_font().buffer)
+ 
+     # Insert recognized text
+     for box, text, conf in result:
+diff --git a/src/ocr/rapidocr_391_backend.py b/src/ocr/rapidocr_391_backend.py
+index d0385c6..096d865 100644
+--- a/src/ocr/rapidocr_391_backend.py
++++ b/src/ocr/rapidocr_391_backend.py
+@@ -10,6 +10,7 @@ Note: RapidOCR 3.9.1 always performs recognition.
+ """
+ 
+ import logging
++import threading
+ 
+ import numpy as np
+ from rapidocr import RapidOCR
+@@ -20,15 +21,18 @@ rapid_logger.handlers.clear()
+ rapid_logger.propagate = False
+ rapid_logger.setLevel(logging.CRITICAL)
+ 
+-# global Engine instance, initialized only once
+-ENGINE = None
++# One engine per thread: an engine is not known to be safe for concurrent use.
++_ENGINES = threading.local()
+ 
+ 
+ def init_engine():
+-    global ENGINE
+-    if ENGINE is None:
+-        ENGINE = RapidOCR()
+-    return ENGINE
++    """
++    Initializes the calling thread's engine once.
++    """
++    engine = getattr(_ENGINES, "engine", None)
++    if engine is None:
++        engine = _ENGINES.engine = RapidOCR()
++    return engine
+ 
+ 
+ # ------------------------------------------------------------
+diff --git a/src/ocr/rapidocr_onnx_backend.py b/src/ocr/rapidocr_onnx_backend.py
+index 339a14b..cc87816 100644
+--- a/src/ocr/rapidocr_onnx_backend.py
++++ b/src/ocr/rapidocr_onnx_backend.py
+@@ -10,21 +10,23 @@ Note: RapidOCR-ONNXRuntime can disable recognition.
+       recognition on the detected text regions, for instance Tesseract.
+ """
+ 
++import threading
++
+ import numpy as np
+ from rapidocr_onnxruntime import RapidOCR
+ 
+-# global Engine instance, initialized only once
+-ENGINE = None
++# One engine per thread: an engine is not known to be safe for concurrent use.
++_ENGINES = threading.local()
+ 
+ 
+ def init_engine():
+     """
+-    Initializes the ONNX Runtime Engine exactly once.
++    Initializes the calling thread's engine once.
+     """
+-    global ENGINE
+-    if ENGINE is None:
+-        ENGINE = RapidOCR()  # no parameters!
+-    return ENGINE
++    engine = getattr(_ENGINES, "engine", None)
++    if engine is None:
++        engine = _ENGINES.engine = RapidOCR()  # no parameters!
++    return engine
+ 
+ 
+ # ------------------------------------------------------------

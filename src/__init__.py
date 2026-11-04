@@ -339,6 +339,49 @@ class _Globals:
 
 _globals = _Globals()
 
+# Per-thread overrides of _globals.small_glyph_heights and
+# _globals.skip_quad_corrections (None: use the process-wide value), so that
+# find_tables() can change them for its own work without affecting text
+# extraction in other threads.
+_text_overrides = threading.local()
+
+
+def _small_glyph_heights():
+    v = getattr(_text_overrides, 'small_glyph_heights', None)
+    return _globals.small_glyph_heights if v is None else v
+
+
+def _skip_quad_corrections():
+    v = getattr(_text_overrides, 'skip_quad_corrections', None)
+    return _globals.skip_quad_corrections if v is None else v
+
+
+def _get_text_overrides():
+    return (
+            getattr(_text_overrides, 'small_glyph_heights', None),
+            getattr(_text_overrides, 'skip_quad_corrections', None),
+            )
+
+
+def _set_text_overrides(small_glyph_heights, skip_quad_corrections):
+    '''
+    Sets the calling thread's overrides (None: use the process-wide value) and
+    returns the previous ones, for restoring with _set_text_overrides(*old).
+    '''
+    old = _get_text_overrides()
+    if small_glyph_heights is not None:
+        small_glyph_heights = bool(small_glyph_heights)
+    if skip_quad_corrections is not None:
+        skip_quad_corrections = bool(skip_quad_corrections)
+    _text_overrides.small_glyph_heights = small_glyph_heights
+    _text_overrides.skip_quad_corrections = skip_quad_corrections
+    if g_use_extra:
+        extra.set_thread_text_overrides(
+                -1 if small_glyph_heights is None else int(small_glyph_heights),
+                -1 if skip_quad_corrections is None else int(skip_quad_corrections),
+                )
+    return old
+
 _get_layout: typing.Optional[typing.Callable] = None
 
 # Set to True by pymupdf.layout when _get_layout keeps one model per thread, so
@@ -2980,12 +3023,11 @@ class Document:
             rect, width, height, fontsize: layout reflowable document
             on open (e.g. EPUB). Ignored if n/a.
         """
-        # We temporarily set JM_mupdf_show_errors=0 while we are constructing,
-        # then restore its original value in a `finally:` block.
+        # We hide MuPDF errors on this thread while we are constructing, and
+        # stop hiding them in a `finally:` block. Per thread, so that other
+        # threads' errors are still shown and the user's setting is kept.
         #
-        global JM_mupdf_show_errors
-        JM_mupdf_show_errors_old = JM_mupdf_show_errors
-        JM_mupdf_show_errors = 0
+        _mupdf_messages.hide_errors = getattr(_mupdf_messages, 'hide_errors', 0) + 1
         
         try:
             self.is_closed    = False
@@ -3121,7 +3163,7 @@ class Document:
                 else:
                     self.page_count2 = extra.page_count_fz
         finally:
-            JM_mupdf_show_errors = JM_mupdf_show_errors_old
+            _mupdf_messages.hide_errors -= 1
     
     def __len__(self) -> int:
         return self.page_count
@@ -4408,11 +4450,11 @@ class Document:
             tp = srcCount - 1
         if tp > srcCount - 1:
             tp = srcCount - 1
-        len0 = len(JM_mupdf_warnings_store)
+        store = _thread_mupdf_messages()
+        len0 = len(store)
         doc = JM_convert_to_pdf(fz_doc, fp, tp, rotate)
-        len1 = len(JM_mupdf_warnings_store)
-        for i in range(len0, len1):
-            message(f'{JM_mupdf_warnings_store[i]}')
+        for text in store[len0:]:
+            message(f'{text}')
         return doc
 
     def copy_page(self, pno: int, to: int =-1):
@@ -11406,8 +11448,10 @@ class Page:
             if self.rotation not in (0, 180):
                 w, h = h, w
             val = Rect(0, 0, w, h)
-            msg = TOOLS.mupdf_warnings(reset=False).splitlines()[-1]
-            message(msg)
+            mupdf.fz_flush_warnings()
+            store = _thread_mupdf_messages()
+            if store:
+                message(store[-1])
         
         return val
 
@@ -18511,6 +18555,7 @@ TEXT_ENCODING_GREEK = 1
 TEXT_ENCODING_CYRILLIC = 2
 
 TOOLS_JM_UNIQUE_ID = 0
+_TOOLS_JM_UNIQUE_ID_LOCK = threading.Lock()
 
 # colorspace identifiers
 CS_RGB = 1
@@ -19693,7 +19738,7 @@ def JM_char_quad(line, ch):
         asc = 0.9
         asc_dsc = 1.0
     
-    if _globals.small_glyph_heights or asc_dsc < 1:
+    if _small_glyph_heights() or asc_dsc < 1:
         dsc = dsc / asc_dsc
         asc = asc / asc_dsc
     asc_dsc = asc - dsc
@@ -20301,7 +20346,7 @@ def JM_font_ascender(font):
     need own versions of ascender / descender
     '''
     assert isinstance(font, mupdf.FzFont)
-    if _globals.skip_quad_corrections:
+    if _skip_quad_corrections():
         return 0.8
     return mupdf.fz_font_ascender(font)
 
@@ -20311,7 +20356,7 @@ def JM_font_descender(font):
     need own versions of ascender / descender
     '''
     assert isinstance(font, mupdf.FzFont)
-    if _globals.skip_quad_corrections:
+    if _skip_quad_corrections():
         return -0.2
     ret = mupdf.fz_font_descender(font)
     return ret
@@ -21077,17 +21122,17 @@ def JM_image_extension(type_):
     return "n/a"
 
 
-# fixme: need to avoid using a global for this.
-g_img_info = None
+# Per thread, so that threads can call JM_image_reporter() concurrently.
+_g_img_info = threading.local()
 
 
 def JM_image_filter(opaque, ctm, name, image):
     assert isinstance(ctm, mupdf.FzMatrix)
     r = mupdf.FzRect(mupdf.FzRect.Fixed_UNIT)
     q = mupdf.fz_transform_quad( mupdf.fz_quad_from_rect(r), ctm)
-    q = mupdf.fz_transform_quad( q, g_img_info_matrix)
+    q = mupdf.fz_transform_quad( q, _g_img_info.matrix)
     temp = name, JM_py_from_quad(q)
-    g_img_info.append(temp)
+    _g_img_info.items.append(temp)
 
 
 def JM_image_profile( imagedata, keep_image):
@@ -21136,10 +21181,9 @@ def JM_image_profile( imagedata, keep_image):
 
 def JM_image_reporter(page):
     doc = page.doc()
-    global g_img_info_matrix
-    g_img_info_matrix = mupdf.FzMatrix()
+    matrix = mupdf.FzMatrix()
     mediabox = mupdf.FzRect()
-    mupdf.pdf_page_transform(page, mediabox, g_img_info_matrix)
+    mupdf.pdf_page_transform(page, mediabox, matrix)
 
     class SanitizeFilterOptions(mupdf.PdfSanitizeFilterOptions2):
         def __init__(self):
@@ -21158,14 +21202,14 @@ def JM_image_reporter(page):
             sopts=sanitize_filter_options,
             )
 
-    global g_img_info
-    g_img_info = []
-
-    mupdf.pdf_filter_page_contents( doc, page, filter_options)
-
-    rc = tuple(g_img_info)
-    g_img_info = []
-    return rc
+    _g_img_info.matrix = matrix
+    _g_img_info.items = []
+    try:
+        mupdf.pdf_filter_page_contents( doc, page, filter_options)
+        return tuple(_g_img_info.items)
+    finally:
+        _g_img_info.items = None
+        _g_img_info.matrix = None
 
 
 def JM_fitz_config():
@@ -21816,18 +21860,36 @@ def JM_merge_resources( page, temp_res):
     return (max_alp, max_fonts) # next available numbers
 
 
+# Per-thread MuPDF message state. MuPDF calls the callbacks below on the thread
+# that raised the warning or error.
+#   hide_errors: nesting count; errors are not shown while > 0.
+#   store: this thread's warnings and errors, for code that needs the
+#       message caused by its own call (JM_mupdf_warnings_store has all
+#       threads' messages).
+_mupdf_messages = threading.local()
+
+
+def _thread_mupdf_messages():
+    store = getattr(_mupdf_messages, 'store', None)
+    if store is None:
+        store = _mupdf_messages.store = []
+    return store
+
+
 def JM_mupdf_warning( text):
     '''
     redirect MuPDF warnings
     '''
     JM_mupdf_warnings_store.append(text)
+    _thread_mupdf_messages().append(text)
     if JM_mupdf_show_warnings:
         message(f'MuPDF warning: {text}')
 
 
 def JM_mupdf_error( text):
     JM_mupdf_warnings_store.append(text)
-    if JM_mupdf_show_errors:
+    _thread_mupdf_messages().append(text)
+    if JM_mupdf_show_errors and not getattr(_mupdf_messages, 'hide_errors', 0):
         message(f'MuPDF error: {text}\n')
 
 
@@ -26150,8 +26212,9 @@ class TOOLS:
     @staticmethod
     def gen_id():
         global TOOLS_JM_UNIQUE_ID
-        TOOLS_JM_UNIQUE_ID += 1
-        return TOOLS_JM_UNIQUE_ID
+        with _TOOLS_JM_UNIQUE_ID_LOCK:
+            TOOLS_JM_UNIQUE_ID += 1
+            return TOOLS_JM_UNIQUE_ID
 
     @staticmethod
     def glyph_cache_empty():
@@ -26208,6 +26271,7 @@ class TOOLS:
     def reset_mupdf_warnings():
         global JM_mupdf_warnings_store
         JM_mupdf_warnings_store = list()
+        _mupdf_messages.store = []
         
     @staticmethod
     def set_aa_level(level):
@@ -26272,12 +26336,15 @@ class TOOLS:
 
     @staticmethod
     def set_small_glyph_heights(on=None):
-        """Set / unset small glyph heights."""
+        """Set / unset small glyph heights.
+
+        Sets the process-wide value; returns the calling thread's value, which
+        differs while find_tables() runs on this thread."""
         if on is not None:
             _globals.small_glyph_heights = bool(on)
             if g_use_extra:
                 extra.set_small_glyph_heights(_globals.small_glyph_heights)
-        return _globals.small_glyph_heights
+        return _small_glyph_heights()
     
     @staticmethod
     def set_subset_fontnames(on=None):
@@ -26333,12 +26400,15 @@ class TOOLS:
     def unset_quad_corrections(on=None):
         '''
         Set ascender / descender corrections on or off.
+
+        Sets the process-wide value; returns the calling thread's value, which
+        differs while find_tables() runs on this thread.
         '''
         if on is not None:
             _globals.skip_quad_corrections = bool(on)
             if g_use_extra:
                 extra.set_skip_quad_corrections(_globals.skip_quad_corrections)
-        return _globals.skip_quad_corrections
+        return _skip_quad_corrections()
 
     # fixme: also defined at top-level.
     JM_annot_id_stem = 'fitz'
@@ -26798,21 +26868,27 @@ __doc__ = (
 
 _optional_modules = {'layout': 'pymupdf.layout', 'pymupdf4llm': 'pymupdf4llm'}
 _optional_cache = dict()
+# Reentrant: importing pymupdf4llm imports pymupdf.layout.
+_optional_lock = threading.RLock()
 
 def _optional_import(name):
     """Import an optional module on first use; return None if not installed."""
     if name not in _optional_cache:
-        fullname = _optional_modules[name]
-        old_skip = _globals.skip_quad_corrections
-        module = None
-        try:
-            module = importlib.import_module(fullname)
-        except ModuleNotFoundError as e:
-            if e.name != fullname:
-                raise   # missing dependency inside the module: don't hide it
-        finally:
-            _globals.skip_quad_corrections = old_skip
-        _optional_cache[name] = module
+        with _optional_lock:
+            if name not in _optional_cache:
+                fullname = _optional_modules[name]
+                old_skip = _globals.skip_quad_corrections
+                module = None
+                try:
+                    module = importlib.import_module(fullname)
+                except ModuleNotFoundError as e:
+                    if e.name != fullname:
+                        raise   # missing dependency inside the module: don't hide it
+                finally:
+                    # Undo the import's side effect on both the Python and the
+                    # C copy of the setting.
+                    TOOLS.unset_quad_corrections(old_skip)
+                _optional_cache[name] = module
     return _optional_cache[name]
 
 def __getattr__(name):

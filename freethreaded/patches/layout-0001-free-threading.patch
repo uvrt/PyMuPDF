@@ -1,0 +1,134 @@
+diff --git a/source/layout/__init__.py b/source/layout/__init__.py
+index 06415c6..50ea3ef 100644
+--- a/source/layout/__init__.py
++++ b/source/layout/__init__.py
+@@ -1,5 +1,6 @@
+ from . import DocumentLayoutAnalyzer
+ from . import onnx
++from .onnx import common_util
+ from . import pymupdf_util
+ 
+ from pymupdf.layout._build import git_sha
+@@ -7,17 +8,58 @@ from pymupdf.layout._build import platform_python_implementation
+ from pymupdf.layout._build import version
+ from pymupdf.layout._build import version_tuple
+ 
++import os
++import threading
++
+ import pymupdf
+ 
+ 
++def _per_thread():
++    """One model per thread on free-threaded Python, unless PYMUPDF_LAYOUT_PER_THREAD=0."""
++    if not getattr(pymupdf, "_free_threaded", False):
++        return False
++    return os.environ.get("PYMUPDF_LAYOUT_PER_THREAD", "1") != "0"
++
++
+ def activate():
+-    """Create a layout analyzer function using an ONNX model."""
++    """Create a layout analyzer function using an ONNX model.
++
++    A model's predict() keeps per-page state on the model, so a shared model
++    must be serialised. On free-threaded Python each thread gets its own model
++    instead (about 20 MB of ONNX sessions per thread), created on first use,
++    and pymupdf._get_layout_per_thread tells callers not to serialise. Models
++    made on worker threads use PYMUPDF_LAYOUT_ORT_THREADS (default 1)
++    onnxruntime threads per session.
++    """
+     if callable(pymupdf._get_layout):
+         return  # already activated
++    per_thread = _per_thread()
++    ort_threads = int(os.environ.get("PYMUPDF_LAYOUT_ORT_THREADS", "1"))
++    if per_thread and threading.current_thread() is not threading.main_thread():
++        # pymupdf4llm imports us lazily, possibly on a worker thread; that
++        # thread's model must not get onnxruntime's default thread pools.
++        common_util.session_settings.intra_op_threads = ort_threads
+     MODEL = DocumentLayoutAnalyzer.get_model()
+ 
+-    def _get_layout(*args, **kwargs):
+-        return MODEL.predict(*args, **kwargs)
++    if per_thread:
++        local = threading.local()
++        local.model = MODEL
++
++        def _get_layout(*args, **kwargs):
++            model = getattr(local, "model", None)
++            if model is None:
++                # Worker threads run in parallel with each other, so their
++                # sessions get few threads (a main-thread model keeps
++                # onnxruntime's defaults). Set for this thread only and left
++                # set, so sessions the model creates later get it too.
++                common_util.session_settings.intra_op_threads = ort_threads
++                model = local.model = DocumentLayoutAnalyzer.get_model()
++            return model.predict(*args, **kwargs)
++
++        pymupdf._get_layout_per_thread = True
++    else:
++        def _get_layout(*args, **kwargs):
++            return MODEL.predict(*args, **kwargs)
+ 
+     pymupdf._get_layout = _get_layout
+ 
+diff --git a/source/layout/onnx/GlobalConfig.py b/source/layout/onnx/GlobalConfig.py
+index 1cfc7c1..73840ff 100644
+--- a/source/layout/onnx/GlobalConfig.py
++++ b/source/layout/onnx/GlobalConfig.py
+@@ -1,15 +1,22 @@
+ import os
++import threading
+ import yaml
+ 
+ 
+ class GlobalConfig:
+     _instance = None
+     _config_data = {}
++    _lock = threading.Lock()
+ 
+     def __new__(cls):
+         if cls._instance is None:
+-            cls._instance = super(GlobalConfig, cls).__new__(cls)
+-            cls._instance._load_config()
++            with cls._lock:
++                if cls._instance is None:
++                    # Load before publishing, so other threads never see an
++                    # instance without its config.
++                    instance = super(GlobalConfig, cls).__new__(cls)
++                    instance._load_config()
++                    cls._instance = instance
+         return cls._instance
+ 
+     def _load_config(self):
+diff --git a/source/layout/onnx/common_util.py b/source/layout/onnx/common_util.py
+index 65259b4..88ec310 100644
+--- a/source/layout/onnx/common_util.py
++++ b/source/layout/onnx/common_util.py
+@@ -5,8 +5,15 @@ Utils shared by the ONNX runtime users.
+ 
+ """
+ 
++import threading
++
+ import onnxruntime as ort
+ 
++# Per-thread session settings. pymupdf.layout sets `intra_op_threads` on worker
++# threads that own their own layout model, so N threads don't each run an
++# onnxruntime thread pool the size of the machine.
++session_settings = threading.local()
++
+ def make_session(model_path, providers=None):
+     """
+     Create an ort.InferenceSession with the CPU memory arena disabled.
+@@ -22,4 +29,11 @@ def make_session(model_path, providers=None):
+     """
+     so = ort.SessionOptions()
+     so.enable_cpu_mem_arena = False
++    threads = getattr(session_settings, "intra_op_threads", None)
++    if threads:
++        so.intra_op_num_threads = threads
++        so.inter_op_num_threads = 1
++        # Idle pool threads spin by default, which steals CPU from the other
++        # worker threads.
++        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+     return ort.InferenceSession(model_path, sess_options=so, providers=providers)

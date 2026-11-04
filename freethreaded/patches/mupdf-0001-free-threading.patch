@@ -1,0 +1,227 @@
+--- a/scripts/wrap/cpp.py	2026-11-04 10:30:36
++++ b/scripts/wrap/cpp.py	2026-11-04 10:30:50
+@@ -1608,6 +1608,11 @@
+ 
+             /** Internal use only. Returns `fz_context*` for use by current thread. */
+             FZ_FUNCTION fz_context* {rename.internal('context_get')}();
++
++            /** Internal use only. Sets the warning (is_error=0) or error
++            callback on the calling thread's context and on the base context
++            from which later threads' contexts are made. */
++            FZ_FUNCTION void {rename.internal('set_diagnostic_callback')}(int is_error, fz_warning_cb* print, void* user);
+ 
+             /* Internal, do not call directly. */
+             FZ_FUNCTION void {rename.internal('check_ndebug0')}(bool caller_ndebug_defined);
+@@ -1786,6 +1791,11 @@
+ 
+             static {rename.internal("state")}  s_state;
+ 
++            /* Installed on a thread's context just before it is dropped. */
++            static void s_diagnostic_noop(void* user, const char* message)
++            {{
++            }}
++
+             struct {rename.internal("thread_state")}
+             {{
+                 {rename.internal("thread_state")}()
+@@ -1830,7 +1840,19 @@
+                                     << " calling fz_clone_context()\\n";
+                         }}
+                         internal_assert(s_state_valid);
+-                        m_ctx = fz_clone_context(s_state.m_ctx);
++                        {{ static const char* indep = getenv("MUPDF_indep_ctx");
++                        if (indep && !strcmp(indep, "1")) {{
++                            /* PATCH: fully independent per-thread context: no shared alloc lock/store. */
++                            m_ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
++                            if (m_ctx) {{
++                                fz_register_document_handlers(m_ctx);
++                                /* Clones inherit the base context's callbacks; do the same. */
++                                fz_set_warning_callback(m_ctx, s_state.m_ctx->warn.print, s_state.m_ctx->warn.print_user);
++                                fz_set_error_callback(m_ctx, s_state.m_ctx->error.print, s_state.m_ctx->error.print_user);
++                            }}
++                        }} else {{
++                            m_ctx = fz_clone_context(s_state.m_ctx);
++                        }} }}
+                         if (s_trace)
+                         {{
+                             std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
+@@ -1850,6 +1872,11 @@
+                             std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
+                                     << " calling fz_drop_context()\\n";
+                         }}
++                        /* fz_drop_context() flushes pending warnings. The
++                        callbacks may call into Python, whose thread state is
++                        gone by the time thread_local destructors run. */
++                        fz_set_warning_callback( m_ctx, s_diagnostic_noop, nullptr);
++                        fz_set_error_callback( m_ctx, s_diagnostic_noop, nullptr);
+                         fz_drop_context( m_ctx);
+                     }}
+ 
+@@ -1871,6 +1898,20 @@
+ 
+             static thread_local {rename.internal("thread_state")}  s_thread_state;
+ 
++            FZ_FUNCTION void {rename.internal("set_diagnostic_callback")}(int is_error, fz_warning_cb* print, void* user)
++            {{
++                fz_context* ctx = {rename.internal("context_get")}();
++                if (is_error)   fz_set_error_callback(ctx, print, user);
++                else            fz_set_warning_callback(ctx, print, user);
++                /* Under the lock that new threads hold while copying it. */
++                std::lock_guard<std::mutex> lock( s_state.m_mutex);
++                if (s_state_valid && s_state.m_ctx && s_state.m_ctx != ctx)
++                {{
++                    if (is_error)   fz_set_error_callback(s_state.m_ctx, print, user);
++                    else            fz_set_warning_callback(s_state.m_ctx, print, user);
++                }}
++            }}
++
+             FZ_FUNCTION fz_context* {rename.internal("context_get")}()
+             {{
+                 if (s_state.m_multithreaded)
+--- a/scripts/wrap/swig.py	2026-11-04 10:30:36
++++ b/scripts/wrap/swig.py	2026-11-04 10:30:50
+@@ -421,11 +421,12 @@
+                     #endif
+                     if (m_description == "warning")
+                     {{
+-                        mupdf::ll_fz_set_warning_callback( s_print, this);
++                        /* All threads' contexts, not only this thread's. */
++                        mupdf::internal_set_diagnostic_callback( 0, s_print, this);
+                     }}
+                     else if (m_description == "error")
+                     {{
+-                        mupdf::ll_fz_set_error_callback( s_print, this);
++                        mupdf::internal_set_diagnostic_callback( 1, s_print, this);
+                     }}
+                     else
+                     {{
+--- a/source/fitz/memory.c	2026-11-04 10:33:59
++++ b/source/fitz/memory.c	2026-11-04 10:33:59
+@@ -41,11 +41,27 @@
+  * except the _no_throw family which instead silently returns NULL.
+  */
+ 
++static void *fz_malloc_default(void *opaque, size_t size);
++static void *fz_realloc_default(void *opaque, void *old, size_t size);
++static void fz_free_default(void *opaque, void *ptr);
++
++/* The default allocator (system malloc) is thread-safe, so it is called
++ * without FZ_LOCK_ALLOC, which all cloned contexts share. The lock is only
++ * taken to scavenge the store when an allocation fails. Custom allocators are
++ * still called under the lock. */
++
+ static void *
+ do_scavenging_malloc(fz_context *ctx, size_t size)
+ {
+ 	void *p;
+ 	int phase = 0;
++
++	if (ctx->alloc.malloc == fz_malloc_default)
++	{
++		p = malloc(size);
++		if (p != NULL)
++			return p;
++	}
+ 
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+ 	do {
+@@ -73,6 +89,13 @@
+ 	void *q;
+ 	int phase = 0;
+ 
++	if (ctx->alloc.realloc == fz_realloc_default)
++	{
++		q = realloc(p, size);
++		if (q != NULL)
++			return q;
++	}
++
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+ 	do {
+ 		q = ctx->alloc.realloc(ctx->alloc.user, p, size);
+@@ -201,6 +224,11 @@
+ {
+ 	if (p)
+ 	{
++		if (ctx->alloc.free == fz_free_default)
++		{
++			free(p);
++			return;
++		}
+ 		fz_lock(ctx, FZ_LOCK_ALLOC);
+ 		ctx->alloc.free(ctx->alloc.user, p);
+ 		fz_unlock(ctx, FZ_LOCK_ALLOC);
+--- a/source/fitz/font.c	2026-11-04 10:33:59
++++ b/source/fitz/font.c	2026-11-04 10:33:59
+@@ -1320,20 +1320,35 @@
+ 	if (gid < 0 || gid >= font->glyph_count || !font->use_glyph_bbox)
+ 		return NULL;
+ 
+-	if (font->bbox_table == NULL) {
++	/* A font can be shared by threads (e.g. fonts cached in the shared font
++	 * context), so tables are filled before they are published, and a thread
++	 * that loses the race frees its copy. */
++	fz_rect **table = __atomic_load_n(&font->bbox_table, __ATOMIC_ACQUIRE);
++	if (table == NULL) {
++		fz_rect **expected = NULL;
+ 		i = (font->glyph_count + 255)/256;
+-		font->bbox_table = Memento_label(fz_malloc_array(ctx, i, fz_rect *), "bbox_table(top)");
+-		memset(font->bbox_table, 0, sizeof(fz_rect *) * i);
++		table = Memento_label(fz_malloc_array(ctx, i, fz_rect *), "bbox_table(top)");
++		memset(table, 0, sizeof(fz_rect *) * i);
++		if (!__atomic_compare_exchange_n(&font->bbox_table, &expected, table, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++			fz_free(ctx, table);
++			table = expected;
++		}
+ 	}
+ 
+-	if (font->bbox_table[gid>>8] == NULL) {
+-		font->bbox_table[gid>>8] = Memento_label(fz_malloc_array(ctx, 256, fz_rect), "bbox_table");
++	fz_rect *row = __atomic_load_n(&table[gid>>8], __ATOMIC_ACQUIRE);
++	if (row == NULL) {
++		fz_rect *expected = NULL;
++		row = Memento_label(fz_malloc_array(ctx, 256, fz_rect), "bbox_table");
+ 		for (i = 0; i < 256; i++) {
+-			font->bbox_table[gid>>8][i] = fz_empty_rect;
++			row[i] = fz_empty_rect;
+ 		}
++		if (!__atomic_compare_exchange_n(&table[gid>>8], &expected, row, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++			fz_free(ctx, row);
++			row = expected;
++		}
+ 	}
+ 
+-	return &font->bbox_table[gid>>8][gid & 255];
++	return &row[gid & 255];
+ }
+ 
+ static fz_rect *
+@@ -2030,16 +2045,24 @@
+ 		{
+ 			int pg = ucs >> 8;
+ 			int ix = ucs & 0xFF;
+-			if (!font->encoding_cache[pg])
++			uint16_t *cache = __atomic_load_n(&font->encoding_cache[pg], __ATOMIC_ACQUIRE);
++			if (!cache)
+ 			{
++				/* Filled before it is published; see get_gid_bbox(). */
+ 				int i;
+-				font->encoding_cache[pg] = fz_malloc_array(ctx, 256, uint16_t);
++				uint16_t *expected = NULL;
++				cache = fz_malloc_array(ctx, 256, uint16_t);
+ 				fz_ft_lock(ctx);
+ 				for (i = 0; i < 256; ++i)
+-					font->encoding_cache[pg][i] = FT_Get_Char_Index(font->ft_face, (pg << 8) + i);
++					cache[i] = FT_Get_Char_Index(font->ft_face, (pg << 8) + i);
+ 				fz_ft_unlock(ctx);
++				if (!__atomic_compare_exchange_n(&font->encoding_cache[pg], &expected, cache, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++				{
++					fz_free(ctx, cache);
++					cache = expected;
++				}
+ 			}
+-			return font->encoding_cache[pg][ix];
++			return cache[ix];
+ 		}
+ 		fz_ft_lock(ctx);
+ 		idx = FT_Get_Char_Index(font->ft_face, ucs);

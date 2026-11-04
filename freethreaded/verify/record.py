@@ -10,6 +10,7 @@ import pymupdf
 import pymupdf.layout  # noqa: F401  (activates layout)
 import pymupdf.features as real
 import pymupdf4llm
+from common import page_numbers
 
 SKIP = ("this", "thisown", "last_char_rect")
 NAMES = [n for n in dir(real.fz_feature_stats) if not n.startswith("_") and n not in SKIP]
@@ -42,7 +43,7 @@ def main():
     t0 = time.perf_counter()
     for f in sorted(glob.glob(os.path.join(pdfdir, "*.pdf"))):
         doc = pymupdf.open(f)
-        md = pymupdf4llm.to_markdown(doc, show_progress=False)
+        md = pymupdf4llm.to_markdown(doc, pages=page_numbers(doc), show_progress=False)
         if mddir:
             with open(os.path.join(mddir, os.path.basename(f)[:-4] + ".md"), "w") as fh:
                 fh.write(md)

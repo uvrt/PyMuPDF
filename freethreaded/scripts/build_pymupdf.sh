@@ -46,14 +46,16 @@ checkout() {  # repo commit dir patch
 cd "$WORK"
 fetch "$MUPDF_URL" "$MUPDF_SHA256" "mupdf-$MUPDF_VERSION-source.tar.gz"
 
-# MuPDF + optional independent context per thread (MUPDF_indep_ctx=1).
+# MuPDF + free-threading patch: optional independent context per thread (MUPDF_indep_ctx=1),
+# warning/error callbacks on every thread's context.
 rm -rf "mupdf-$MUPDF_VERSION-source"
 tar xzf "mupdf-$MUPDF_VERSION-source.tar.gz"
-patch -d "mupdf-$MUPDF_VERSION-source" -p1 < "$FT/patches/mupdf-0001-optional-independent-context-per-thread.patch"
+patch -d "mupdf-$MUPDF_VERSION-source" -p1 < "$FT/patches/mupdf-0001-free-threading.patch"
 
-# pymupdf_layout + pymupdf4llm, each patched for one layout model per thread without the GIL.
-checkout "$LAYOUT_REPO" "$LAYOUT_COMMIT" pymupdf_layout "$FT/patches/layout-0001-per-thread-model-without-gil.patch"
-checkout "$LLM_REPO" "$LLM_COMMIT" pymupdf4llm "$FT/patches/pymupdf4llm-0001-skip-layout-lock-with-per-thread-models.patch"
+# pymupdf_layout + pymupdf4llm, patched for free threading: a layout model per thread, thread-safe
+# shared state, onnxruntime thread pools sized for parallel threads.
+checkout "$LAYOUT_REPO" "$LAYOUT_COMMIT" pymupdf_layout "$FT/patches/layout-0001-free-threading.patch"
+checkout "$LLM_REPO" "$LLM_COMMIT" pymupdf4llm "$FT/patches/pymupdf4llm-0001-free-threading.patch"
 
 # Build from a clean copy of the checkout so build products don't land in the repo.
 rm -rf pymupdf-src
@@ -66,6 +68,7 @@ fi
 venv-build/bin/python -m pip install -q --upgrade pip
 
 export PYMUPDF_SETUP_FAKE_NOGIL=1            # swig -nogil: every extension declares Py_MOD_GIL_NOT_USED
+export PYMUPDF_SETUP_SWIG_PIP=${PYMUPDF_SETUP_SWIG_PIP:-swig==4.5.1}   # setup.py otherwise takes the latest swig
 export PYMUPDF_SETUP_PY_LIMITED_API=0        # the limited API and free threading don't mix (PEP 803)
 export PYMUPDF_SETUP_REQUIRE_LAYOUT_4LLM=0   # don't depend on the empty pymupdf_layout/pymupdf4llm packages
 export PYMUPDF_SETUP_MUPDF_BUILD="$WORK/mupdf-$MUPDF_VERSION-source"

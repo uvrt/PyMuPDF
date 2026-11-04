@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify a 3.15t PyMuPDF build against the official PyMuPDF wheel on regular 3.15.
 #
-# usage: verify/run_all.sh OFFICIAL_PY OURS_PY [WORKDIR]
+# usage: verify/run_all.sh OFFICIAL_PY OURS_PY [WORKDIR [DOCSDIR]]
 #   OFFICIAL_PY  python 3.14 or 3.15 (GIL build) with the official PyMuPDF 2.1 wheel (+ onnxruntime)
 #   OURS_PY      python 3.15t with our wheel installed (+ onnxruntime cp315t, numpy, pyyaml,
 #                networkx, psutil, tabulate)
@@ -14,6 +14,7 @@
 #   5. rendering (RGB/GRAY/CMYK) + text extraction thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
 #   6. to_markdown byte-identical, one layout model per thread (built in), 1/4/8 threads x 3 rounds,
 #      plus once with PYMUPDF_LAYOUT_PER_THREAD=0 (shared model behind the lock)
+#   7. with DOCSDIR (real-world PDFs, see fetch_docs.py): steps 5 and 6 on the first pages of each
 # Every script runs from WORKDIR with absolute script paths, so nothing shadows a module.
 set -euo pipefail
 OFF=${1:?OFFICIAL_PY}; OURS=${2:?OURS_PY}
@@ -45,4 +46,13 @@ for indep in 0 1; do
     MUPDF_indep_ctx=$indep "$OURS" "$V/md_check.py" corpus/heldout md_ref 1,4,8 3 perthread
 done
 "$OURS" "$V/md_check.py" corpus/heldout md_ref 4 1 shipped
+
+if [ -n "${4:-}" ]; then
+    D=$(cd "$4" && pwd)
+    MAX_PAGES=12 "$OFF" "$V/record.py" "$D" rec_docs.pkl --md md_ref_docs
+    for indep in 0 1; do
+        MAX_PAGES=6 MUPDF_indep_ctx=$indep "$OURS" "$V/stress_render.py" "$D" 1,4 1
+    done
+    MAX_PAGES=12 "$OURS" "$V/md_check.py" "$D" md_ref_docs 1,4 2 perthread
+fi
 echo "ALL CHECKS PASSED"

@@ -9,3 +9,10 @@ STEXT_FLAGS = (pymupdf.TEXT_PRESERVE_IMAGES | pymupdf.TEXT_PRESERVE_WHITESPACE |
 
 def textpage(page):
     return page.get_textpage(flags=STEXT_FLAGS)
+
+
+def page_numbers(doc):
+    """Pages to process: all, or the first $MAX_PAGES (for long real-world documents)."""
+    import os
+    n = int(os.environ.get("MAX_PAGES", "0"))
+    return list(range(min(n, doc.page_count))) if n > 0 else None

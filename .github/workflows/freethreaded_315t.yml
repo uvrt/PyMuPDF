@@ -66,6 +66,14 @@ jobs:
         with:
           path: wheels
           merge-multiple: true
+      - name: Real-world test PDFs
+        id: docs
+        uses: actions/cache@v4
+        with:
+          path: docs
+          key: testdocs-${{ hashFiles('freethreaded/testdocs/manifest.json') }}
+      - name: Fetch test PDFs
+        run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
       - name: Fonts for the generated corpus
         run: sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
       # PyPI has no onnxruntime for 3.15, so the reference side is the official wheel on 3.14.
@@ -83,9 +91,74 @@ jobs:
           "$RUNNER_TEMP/ours/bin/pip" list
       - name: Verify
         shell: bash
-        run: freethreaded/verify/run_all.sh "$RUNNER_TEMP/official/bin/python" "$RUNNER_TEMP/ours/bin/python" "$RUNNER_TEMP/verify-work" 2>&1 | tee verify.txt
+        run: freethreaded/verify/run_all.sh "$RUNNER_TEMP/official/bin/python" "$RUNNER_TEMP/ours/bin/python" "$RUNNER_TEMP/verify-work" "$PWD/docs" 2>&1 | tee verify.txt
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: verify-log
           path: verify.txt
+
+  profile:
+    needs: [onnxruntime, pymupdf]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          merge-multiple: true
+      - name: Real-world test PDFs
+        id: docs2
+        uses: actions/cache@v4
+        with:
+          path: docs
+          key: testdocs-${{ hashFiles('freethreaded/testdocs/manifest.json') }}
+      - name: Fetch test PDFs
+        run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
+      - name: Environment
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+          sudo apt-get install -yq linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -yq linux-tools-azure || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0 || true
+          curl -fsSL -o "$RUNNER_TEMP/pbs.tgz" "$PBS_URL" && echo "$PBS_SHA256  $RUNNER_TEMP/pbs.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/py315t" && tar xzf "$RUNNER_TEMP/pbs.tgz" -C "$RUNNER_TEMP/py315t"
+          "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
+          "$RUNNER_TEMP/ours/bin/pip" install -q --find-links wheels wheels/pymupdf-*.whl psutil tabulate
+          lscpu | grep -E "^CPU\(s\)|Thread|Core|Model name"
+      - name: Profile
+        shell: bash
+        run: |
+          set -x
+          PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; mkdir -p prof && cd prof
+          "$PY" -I "$V/gen_corpus.py" corpus 0 24
+          export PYTHONPATH="$V"
+          "$PY" "$V/profile_md.py" corpus 24 1,2,4 default.json 2>&1 | tee -a ../profile.txt
+          PYMUPDF_LAYOUT_ORT_THREADS=0 "$PY" "$V/profile_md.py" corpus 24 1,2,4 ort_default.json 2>&1 | tee -a ../profile.txt
+          PYMUPDF_LAYOUT_PER_THREAD=0 "$PY" "$V/profile_md.py" corpus 24 1,4 shared_model.json 2>&1 | tee -a ../profile.txt
+          MUPDF_indep_ctx=1 "$PY" "$V/profile_md.py" corpus 24 1,2,4 indep.json 2>&1 | tee -a ../profile.txt
+          for indep in 0 1; do MUPDF_indep_ctx=$indep "$PY" "$V/stress_render.py" corpus 1,2,4 2 2>&1 | tee -a ../profile.txt; done
+          echo "## real-world PDFs, first 6 pages each" | tee -a ../profile.txt
+          MAX_PAGES=6 "$PY" "$V/profile_md.py" ../docs 45 1,2,4 docs_default.json 2>&1 | tee -a ../profile.txt
+          MAX_PAGES=6 PYMUPDF_LAYOUT_ORT_THREADS=0 "$PY" "$V/profile_md.py" ../docs 45 1,4 docs_ort_default.json 2>&1 | tee -a ../profile.txt
+          for indep in 0 1; do MAX_PAGES=4 MUPDF_indep_ctx=$indep "$PY" "$V/stress_render.py" ../docs 1,2,4 1 2>&1 | tee -a ../profile.txt; done
+      - name: perf
+        continue-on-error: true
+        shell: bash
+        run: |
+          PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; cd prof; export PYTHONPATH="$V"
+          for indep in 0 1; do
+            MUPDF_indep_ctx=$indep perf record -q -F 499 -g -o oncpu$indep.data -- "$PY" -X perf "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
+            perf report -i oncpu$indep.data --no-children --sort dso,sym --stdio 2>/dev/null | grep -v "^$" | head -80 > ../perf_oncpu_indep$indep.txt
+            MUPDF_indep_ctx=$indep perf record -q -e sched:sched_switch -g -o offcpu$indep.data -- "$PY" "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
+            perf report -i offcpu$indep.data --no-children --sort sym --stdio -G 2>/dev/null | grep -v "^$" | head -200 > ../perf_offcpu_indep$indep.txt
+          done
+          ls -l ../perf_*.txt
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile
+          path: |
+            profile.txt
+            perf_*.txt
+            prof/*.json
