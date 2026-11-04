@@ -1,15 +1,15 @@
---- a/include/mupdf/fitz/context.h	2026-11-04 10:54:00
-+++ b/include/mupdf/fitz/context.h	2026-11-04 10:54:13
+--- a/include/mupdf/fitz/context.h
++++ b/include/mupdf/fitz/context.h
 @@ -962,20 +962,25 @@
  #define fz_drop_imp(C,P,R) fz_drop_imp_aux((C), (P), (P) ? (R) : NULL)
  #define fz_drop_imp8(C,P,R) fz_drop_imp8_aux((C), (P), (P) ? (R) : NULL)
  #define fz_drop_imp16(C,P,R) fz_drop_imp16_aux((C), (P), (P) ? (R) : NULL)
 +
 +/* Atomic reference counts (free-threading patch, optional): keeps and drops
-+ * no longer take FZ_LOCK_ALLOC, which all cloned contexts share. Every
-+ * writer of these counts goes through these functions, so all writes are
-+ * atomic. Counts <= 0 mark static objects and are never changed. Storable
-+ * objects (store.c) keep using the lock. */
++ * no longer take FZ_LOCK_ALLOC, which all cloned contexts share. Counts
++ * <= 0 mark static objects and are never changed. fz_keep_storable uses
++ * these too, so store.c, which changes storable refs itself with the lock
++ * held, makes those changes atomic as well (SREFS_* in store.c). */
  
  static inline void *
 -fz_keep_imp_aux(fz_context *ctx, void *p, int *refs)
@@ -199,3 +199,249 @@
  	}
  	return 0;
  }
+--- a/source/fitz/store.c
++++ b/source/fitz/store.c
+@@ -27,6 +27,17 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++/* Free-threading patch (atomic refcounts): fz_keep_storable increments
++ * storable refs without FZ_LOCK_ALLOC (fz_keep_imp), so every other write to
++ * them here, all made with the lock held, must be an atomic read-modify-write
++ * as well, or a concurrent keep is lost. Concurrent lock-free writers only
++ * ever increment, so the store's decisions under the lock stay valid: an
++ * object with refs == 1 (or refs == store_key_refs) is held only by the store,
++ * and nobody can keep it without the lock (fz_find_item). */
++#define SREFS(R) __atomic_load_n(&(R), __ATOMIC_RELAXED)
++#define SREFS_INC(R) ((void)__atomic_add_fetch(&(R), 1, __ATOMIC_RELAXED))
++#define SREFS_DEC(R) __atomic_sub_fetch(&(R), 1, __ATOMIC_ACQ_REL)
++
+ typedef struct fz_item
+ {
+ 	void *key;
+@@ -157,9 +168,9 @@
+ 		}
+ 
+ 		/* Store whether to drop this value or not in 'prev' */
+-		if (item->val->refs > 0)
++		if (SREFS(item->val->refs) > 0)
+ 			(void)Memento_dropRef(item->val);
+-		item->prev = (item->val->refs > 0 && --item->val->refs == 0) ? item : NULL;
++		item->prev = (SREFS(item->val->refs) > 0 && SREFS_DEC(item->val->refs) == 0) ? item : NULL;
+ 
+ 		/* Store it in our removal chain - just singly linked */
+ 		item->next = remove;
+@@ -195,12 +206,14 @@
+ 		return;
+ 
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	assert(s->storable.refs != 0);
+-	if (s->storable.refs > 0)
++	assert(SREFS(s->storable.refs) != 0);
++	if (SREFS(s->storable.refs) > 0)
+ 	{
++		int refs;
+ 		(void)Memento_dropRef(s);
+-		drop = --s->storable.refs == 0;
+-		if (!drop && s->storable.refs == s->store_key_refs)
++		refs = SREFS_DEC(s->storable.refs);
++		drop = refs == 0;
++		if (!drop && refs == s->store_key_refs)
+ 		{
+ 			if (ctx->store->defer_reap_count > 0)
+ 			{
+@@ -238,10 +251,10 @@
+ 		return NULL;
+ 
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	if (s->storable.refs > 0)
++	if (SREFS(s->storable.refs) > 0)
+ 	{
+ 		(void)Memento_takeRef(s);
+-		++s->storable.refs;
++		SREFS_INC(s->storable.refs);
+ 		++s->store_key_refs;
+ 	}
+ 	fz_unlock(ctx, FZ_LOCK_ALLOC);
+@@ -259,9 +272,9 @@
+ 		return;
+ 
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	assert(s->store_key_refs > 0 && s->storable.refs >= s->store_key_refs);
++	assert(s->store_key_refs > 0 && SREFS(s->storable.refs) >= s->store_key_refs);
+ 	(void)Memento_dropRef(s);
+-	drop = --s->storable.refs == 0;
++	drop = SREFS_DEC(s->storable.refs) == 0;
+ 	--s->store_key_refs;
+ 	fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 	/*
+@@ -293,9 +306,9 @@
+ 		store->head = item->next;
+ 
+ 	/* Drop a reference to the value (freeing if required) */
+-	if (item->val->refs > 0)
++	if (SREFS(item->val->refs) > 0)
+ 		(void)Memento_dropRef(item->val);
+-	drop = (item->val->refs > 0 && --item->val->refs == 0);
++	drop = (SREFS(item->val->refs) > 0 && SREFS_DEC(item->val->refs) == 0);
+ 
+ 	/* Remove from the hash table */
+ 	if (item->type->make_hash_key)
+@@ -330,7 +343,7 @@
+ 	count = 0;
+ 	for (item = store->tail; item; item = item->prev)
+ 	{
+-		if (item->val->refs == 1)
++		if (SREFS(item->val->refs) == 1)
+ 		{
+ 			count += item->size;
+ 			if (count >= tofree)
+@@ -349,7 +362,7 @@
+ 	for (item = store->tail; item; item = prev)
+ 	{
+ 		prev = item->prev;
+-		if (item->val->refs != 1)
++		if (SREFS(item->val->refs) != 1)
+ 			continue;
+ 
+ 		store->size -= item->size;
+@@ -394,9 +407,9 @@
+ 		to_be_freed = to_be_freed->next;
+ 
+ 		/* Drop a reference to the value (freeing if required) */
+-		if (item->val->refs > 0)
++		if (SREFS(item->val->refs) > 0)
+ 			(void)Memento_dropRef(item->val);
+-		drop = (item->val->refs > 0 && --item->val->refs == 0);
++		drop = (SREFS(item->val->refs) > 0 && SREFS_DEC(item->val->refs) == 0);
+ 
+ 		fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 		if (drop)
+@@ -504,10 +517,10 @@
+ 			 * to the existing one, and drop our current one. */
+ 			fz_warn(ctx, "found duplicate %s in the store", type->name);
+ 			touch(store, existing);
+-			if (existing->val->refs > 0)
++			if (SREFS(existing->val->refs) > 0)
+ 			{
+ 				(void)Memento_takeRef(existing->val);
+-				existing->val->refs++;
++				SREFS_INC(existing->val->refs);
+ 			}
+ 			fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 			fz_free(ctx, item);
+@@ -517,10 +530,10 @@
+ 	}
+ 
+ 	/* Now bump the ref */
+-	if (val->refs > 0)
++	if (SREFS(val->refs) > 0)
+ 	{
+ 		(void)Memento_takeRef(val);
+-		val->refs++;
++		SREFS_INC(val->refs);
+ 	}
+ 
+ 	/* If we haven't got an infinite store, check for space within it */
+@@ -619,10 +632,10 @@
+ 		 * store being full. */
+ 		touch(store, item);
+ 		/* And bump the refcount before returning */
+-		if (item->val->refs > 0)
++		if (SREFS(item->val->refs) > 0)
+ 		{
+ 			(void)Memento_takeRef(item->val);
+-			item->val->refs++;
++			SREFS_INC(item->val->refs);
+ 		}
+ 		fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 		return (void *)item->val;
+@@ -678,9 +691,9 @@
+ 			else
+ 				store->head = item->next;
+ 		}
+-		if (item->val->refs > 0)
++		if (SREFS(item->val->refs) > 0)
+ 			(void)Memento_dropRef(item->val);
+-		dodrop = (item->val->refs > 0 && --item->val->refs == 0);
++		dodrop = (SREFS(item->val->refs) > 0 && SREFS_DEC(item->val->refs) == 0);
+ 		fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 		if (dodrop)
+ 			item->val->drop(ctx, item->val);
+@@ -742,7 +755,7 @@
+ 	fz_write_printf(ctx, out, "STORE\thash[");
+ 	for (i=0; i < keylen; ++i)
+ 		fz_write_printf(ctx, out,"%02x", key[i]);
+-	fz_write_printf(ctx, out, "][refs=%d][size=%d] key=%s val=%p\n", item->val->refs, (int)item->size, buf, (void *)item->val);
++	fz_write_printf(ctx, out, "][refs=%d][size=%d] key=%s val=%p\n", SREFS(item->val->refs), (int)item->size, buf, (void *)item->val);
+ }
+ 
+ static void
+@@ -761,18 +774,18 @@
+ 		if (next)
+ 		{
+ 			(void)Memento_takeRef(next->val);
+-			next->val->refs++;
++			SREFS_INC(next->val->refs);
+ 		}
+ 		fz_unlock(ctx, FZ_LOCK_ALLOC);
+ 		item->type->format_key(ctx, buf, sizeof buf, item->key);
+ 		fz_lock(ctx, FZ_LOCK_ALLOC);
+ 		fz_write_printf(ctx, out, "STORE\tstore[*][refs=%d][size=%d] key=%s val=%p\n",
+-				item->val->refs, (int)item->size, buf, (void *)item->val);
++				SREFS(item->val->refs), (int)item->size, buf, (void *)item->val);
+ 		list_total += item->size;
+ 		if (next)
+ 		{
+ 			(void)Memento_dropRef(next->val);
+-			next->val->refs--;
++			(void)SREFS_DEC(next->val->refs);
+ 		}
+ 	}
+ 
+@@ -835,7 +848,7 @@
+ 
+ 		for (item = store->tail; item; item = item->prev)
+ 		{
+-			if (item->val->refs == 1 && (item->val->droppable == NULL || item->val->droppable(ctx, item->val)))
++			if (SREFS(item->val->refs) == 1 && (item->val->droppable == NULL || item->val->droppable(ctx, item->val)))
+ 			{
+ 				/* This one is evictable */
+ 				suffix_size += item->size;
+@@ -881,10 +894,10 @@
+ 	fz_lock(ctx, FZ_LOCK_ALLOC);
+ 	/* Drop the ref, and leave num as being the number of
+ 	 * refs left (-1 meaning, "statically allocated"). */
+-	if (s->refs > 0)
++	if (SREFS(s->refs) > 0)
+ 	{
+ 		(void)Memento_dropIntRef(s);
+-		num = --s->refs;
++		num = SREFS_DEC(s->refs);
+ 	}
+ 	else
+ 		num = -1;
+@@ -1056,9 +1069,9 @@
+ 		}
+ 
+ 		/* Store whether to drop this value or not in 'prev' */
+-		if (item->val->refs > 0)
++		if (SREFS(item->val->refs) > 0)
+ 			(void)Memento_dropRef(item->val);
+-		item->prev = (item->val->refs > 0 && --item->val->refs == 0) ? item : NULL;
++		item->prev = (SREFS(item->val->refs) > 0 && SREFS_DEC(item->val->refs) == 0) ? item : NULL;
+ 
+ 		/* Store it in our removal chain - just singly linked */
+ 		item->next = remove;
+--- a/source/fitz/image.c
++++ b/source/fitz/image.c
+@@ -34,7 +34,8 @@
+ static int
+ fz_key_storable_needs_reaping(fz_context *ctx, const fz_key_storable *ks)
+ {
+-	return ks == NULL ? 0 : (ks->store_key_refs == ks->storable.refs);
++	/* Free-threading patch (atomic refcounts): refs change without the lock. */
++	return ks == NULL ? 0 : (ks->store_key_refs == __atomic_load_n(&ks->storable.refs, __ATOMIC_RELAXED));
+ }
+ 
+ #define SANE_DPI 72.0f
