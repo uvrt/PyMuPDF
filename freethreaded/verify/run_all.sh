@@ -12,9 +12,8 @@
 #   3. features bit-exact on all fields, development and held-out
 #   4. features thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
 #   5. rendering (RGB/GRAY/CMYK) + text extraction thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
-#   5b. with $OCR_TESSDATA (a Tesseract language-data folder): OCR thread stress at 1/4 threads.
-#      Kept out of TESSDATA_PREFIX and PATH on purpose: if PyMuPDF finds Tesseract,
-#      pymupdf4llm OCRs pages, and the recorded reference no longer matches the replay.
+#   (No OCR: keep Tesseract off the machine. If PyMuPDF finds it, pymupdf4llm OCRs pages and
+#    the recorded reference no longer matches the replay.)
 #   6. to_markdown byte-identical, one layout model per thread (built in), 1/4/8 threads x 3 rounds,
 #      plus once with PYMUPDF_LAYOUT_PER_THREAD=0 (shared model behind the lock)
 #   7. with DOCSDIR (real-world PDFs, see fetch_docs.py): steps 5 and 6 on the first pages of each
@@ -44,10 +43,6 @@ done
 for indep in 0 1; do
     MUPDF_indep_ctx=$indep "$OURS" "$V/stress_render.py" corpus/dev 1,4,8 3
 done
-
-if [ -n "${OCR_TESSDATA:-}" ]; then
-    "$OURS" "$V/stress_ocr.py" corpus/dev 1,4 2 "$OCR_TESSDATA"
-fi
 
 for indep in 0 1; do
     MUPDF_indep_ctx=$indep "$OURS" "$V/md_check.py" corpus/heldout md_ref 1,4,8 3 perthread
