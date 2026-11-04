@@ -22,11 +22,12 @@ Linux x86_64 only. Started from the uvrt 3.15t build kit (4 November 2026).
 | MuPDF allocator (`memory.c`) | Every `fz_malloc`/`fz_realloc`/`fz_free` held `FZ_LOCK_ALLOC`, which all threads' contexts share, **around the system malloc call itself**. | The default allocator is called without the lock; the lock is only taken to scavenge the store when an allocation fails. Custom allocators are still locked. |
 | Layout model | One model behind pymupdf4llm's `_LAYOUT_LOCK`. | One model per thread on free-threaded builds (opt out: `PYMUPDF_LAYOUT_PER_THREAD=0`). The lock is skipped, including for the first wave of threads. |
 | onnxruntime sessions | Each model's 3 sessions got a spinning thread pool the size of the machine, so N worker threads ran N × cores ONNX threads. | Models made on worker threads use `PYMUPDF_LAYOUT_ORT_THREADS` (default 1) threads per session, no spinning. A main-thread model keeps onnxruntime's defaults for single-threaded use. `PYMUPDF_LAYOUT_ORT_THREADS=0` restores the defaults everywhere. |
+| MuPDF glyph cache (`draw-glyph.c`) | On a cache miss, FreeType rasterised the glyph while holding `FZ_LOCK_GLYPHCACHE`, blocking every other thread's cache lookups. | Rendered outside the lock, as MuPDF already does for Type 3 glyphs; a glyph rendered twice meanwhile is inserted once. |
 | MuPDF context | `reinit_singlethreaded()`: one context for all threads. | Each thread keeps its own cloned context. |
 
 Still shared in clone mode, and measured by the `profile` CI job: refcount changes (`fz_keep_*` /
-`fz_drop_*`, twice per extracted character) under `FZ_LOCK_ALLOC`, the glyph cache lock held while
-FreeType rasterises a missing glyph, and `FZ_LOCK_FREETYPE`. Making refcounts atomic is the
+`fz_drop_*`, twice per extracted character) under `FZ_LOCK_ALLOC`, and `FZ_LOCK_FREETYPE`, one
+lock for all FreeType faces. Making refcounts atomic is the
 next step if the profile shows `FZ_LOCK_ALLOC` contention.
 
 ### Thread-safety fixes
@@ -53,7 +54,7 @@ next step if the profile shows `FZ_LOCK_ALLOC` contention.
 |---|---|
 | `src/__init__.py`, `src/table.py`, `src/extra.i` | The changes above; `_free_threaded` and `_get_layout_per_thread` flags. |
 | `setup.py` | Don't add `pymupdf-layout==2.1` to the requirements when layout is embedded (it pulled in the empty placeholder package). |
-| `freethreaded/patches/mupdf-0001-free-threading.patch` | MuPDF 1.28.6: allocator fast path, font cache publishing, warning/error callbacks for all threads, optional `MUPDF_indep_ctx=1`. Edits `scripts/wrap/cpp.py` and `swig.py` (code generators), so re-check on every MuPDF upgrade. |
+| `freethreaded/patches/mupdf-0001-free-threading.patch` | MuPDF 1.28.6: allocator fast path, glyph rendering outside the glyph cache lock, font cache publishing, warning/error callbacks for all threads, optional `MUPDF_indep_ctx=1`. Edits `scripts/wrap/cpp.py` and `swig.py` (code generators), so re-check on every MuPDF upgrade. |
 | `freethreaded/patches/layout-0001-free-threading.patch` | pymupdf_layout 2.1: per-thread models, onnxruntime thread settings, `GlobalConfig`. |
 | `freethreaded/patches/pymupdf4llm-0001-free-threading.patch` | pymupdf4llm: lock skipped with per-thread models, OCR and message fixes. |
 | `freethreaded/patches/onnxruntime-0001-python-3.15-packaging.patch` | onnxruntime 1.31.1: the 3.15 subset of upstream PR #33359 (classifier, numpy pin for unit-test builds). |
