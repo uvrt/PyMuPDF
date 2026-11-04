@@ -95,6 +95,24 @@
                      }}
                      else
                      {{
+@@ -466,6 +467,17 @@
+                 static void s_print( void* self0, const char* message)
+                 {{
+                     DiagnosticCallback* self = (DiagnosticCallback*) self0;
++                    /* Free-threading patch: the caller may run detached from
++                    the interpreter (PyEval_SaveThread()), so attach for the
++                    Python override of _print(). */
++                    #ifdef SWIGPYTHON
++                    struct Attached
++                    {{
++                        PyGILState_STATE m_state;
++                        Attached() : m_state( PyGILState_Ensure()) {{}}
++                        ~Attached() {{ PyGILState_Release( m_state); }}
++                    }} attached;
++                    #endif
+                     try
+                     {{
+                         return self->_print( message);
 --- a/source/fitz/memory.c
 +++ b/source/fitz/memory.c
 @@ -41,11 +41,27 @@

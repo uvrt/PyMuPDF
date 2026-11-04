@@ -103,6 +103,28 @@ catch(...) {
 #include <float.h>
 
 
+/* Free threading: long MuPDF calls that don't touch Python objects run detached
+from the interpreter (JM_Detached), so that stop-the-world pauses, which a
+free-threaded cyclic GC needs, don't wait for them; on GIL builds this releases
+the GIL. MuPDF warnings and errors reach Python through DiagnosticCallback, which
+attaches again (patches/mupdf-0001). Loops that use the Python API for a long
+time call JM_safepoint(), which lets a pending stop-the-world proceed. */
+struct JM_Detached
+{
+    PyThreadState* m_state;
+    JM_Detached() : m_state(PyEval_SaveThread()) {}
+    ~JM_Detached() { PyEval_RestoreThread(m_state); }
+    JM_Detached(const JM_Detached&) = delete;
+    JM_Detached& operator=(const JM_Detached&) = delete;
+};
+
+static inline void JM_safepoint()
+{
+#ifdef Py_GIL_DISABLED
+    PyEval_RestoreThread(PyEval_SaveThread());
+#endif
+}
+
 #define MAKE_MUPDF_VERSION_INT(major, minor, patch) ((major << 16) + (minor << 8) + (patch << 0))
 
 #define MUPDF_VERSION_INT MAKE_MUPDF_VERSION_INT(FZ_VERSION_MAJOR, FZ_VERSION_MINOR, FZ_VERSION_PATCH)
@@ -3585,6 +3607,23 @@ static PyObject *JM_UnicodeFromStr(const char *c)
     return val;
 }
 
+// Display list of a page (list device only), made detached.
+mupdf::FzDisplayList page_display_list(mupdf::FzPage& page, int annots)
+{
+    JM_Detached detached;
+    if (annots)
+        return mupdf::fz_new_display_list_from_page(page);
+    return mupdf::fz_new_display_list_from_page_contents(page);
+}
+
+// Runs a display list into a draw device (no Python callbacks) detached, then closes the device.
+void draw_display_list(mupdf::FzDisplayList& list, mupdf::FzDevice& dev, mupdf::FzRect& clip)
+{
+    JM_Detached detached;
+    mupdf::fz_run_display_list(list, dev, mupdf::FzMatrix(), clip, mupdf::FzCookie());
+    mupdf::fz_close_device(dev);
+}
+
 PyObject* link_uri(mupdf::FzLink& link)
 {
     return JM_UnicodeFromStr( link.m_internal->uri);
@@ -3604,10 +3643,14 @@ fz_stext_page* page_get_textpage(
     fz_stext_options options;
     memset(&options, 0, sizeof options);
     options.flags = flags;
+    // Python arguments first: the MuPDF work below runs detached.
+    int use_bound = (clip == Py_None);
+    fz_rect rect = use_bound ? fz_empty_rect : JM_rect_from_py(clip);
+    fz_matrix ctm = JM_matrix_from_py(matrix);
+    PyThreadState* detached = PyEval_SaveThread();
     fz_try(ctx) {
         // Default to page's rect if `clip` not specified, for #2048.
-        fz_rect rect = (clip==Py_None) ? fz_bound_page(ctx, page) : JM_rect_from_py(clip);
-        fz_matrix ctm = JM_matrix_from_py(matrix);
+        if (use_bound) rect = fz_bound_page(ctx, page);
         tpage = fz_new_stext_page(ctx, rect);
         dev = fz_new_stext_device(ctx, tpage, &options);
         fz_run_page(ctx, page, dev, ctm, NULL);
@@ -3615,6 +3658,7 @@ fz_stext_page* page_get_textpage(
     }
     fz_always(ctx) {
         fz_drop_device(ctx, dev);
+        PyEval_RestoreThread(detached);
     }
     fz_catch(ctx) {
         mupdf::internal_throw_exception(ctx);
@@ -3881,6 +3925,7 @@ int _as_dict(PyObject *block_list, fz_stext_block *block, fz_buffer *text_buffer
     PyObject *block_dict;
     while (block)
     {
+        JM_safepoint();
         switch (block->type)
         {
             case FZ_STEXT_BLOCK_STRUCT:
@@ -4569,6 +4614,8 @@ PyObject* extractWORDS(mupdf::FzStextPage& this_tpage, PyObject *delimiters);
 PyObject* extractBLOCKS(mupdf::FzStextPage& self);
 
 PyObject* link_uri(mupdf::FzLink& link);
+mupdf::FzDisplayList page_display_list(mupdf::FzPage& page, int annots);
+void draw_display_list(mupdf::FzDisplayList& list, mupdf::FzDevice& dev, mupdf::FzRect& clip);
 
 fz_stext_page* page_get_textpage(
         mupdf::FzPage& self,

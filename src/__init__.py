@@ -12208,7 +12208,9 @@ class Page:
         Include (default) or exclude annotations.
         '''
         CheckParent(self)
-        if annots:
+        if g_use_extra:
+            dl = extra.page_display_list(self.this, 1 if annots else 0)
+        elif annots:
             dl = mupdf.fz_new_display_list_from_page(self.this)
         else:
             dl = mupdf.fz_new_display_list_from_page_contents(self.this)
@@ -22058,12 +22060,15 @@ def JM_pixmap_from_display_list(
 
     if not mupdf.fz_is_infinite_rect(rclip):
         dev = mupdf.fz_new_draw_device_with_bbox(matrix, pix, irect)
-        mupdf.fz_run_display_list(list_, dev, mupdf.FzMatrix(), rclip, mupdf.FzCookie())
+        run_clip = rclip
     else:
         dev = mupdf.fz_new_draw_device(matrix, pix)
-        mupdf.fz_run_display_list(list_, dev, mupdf.FzMatrix(), mupdf.FzRect(mupdf.FzRect.Fixed_INFINITE), mupdf.FzCookie())
-
-    mupdf.fz_close_device(dev)
+        run_clip = mupdf.FzRect(mupdf.FzRect.Fixed_INFINITE)
+    if g_use_extra:
+        extra.draw_display_list(list_, dev, run_clip)   # detached from the interpreter
+    else:
+        mupdf.fz_run_display_list(list_, dev, mupdf.FzMatrix(), run_clip, mupdf.FzCookie())
+        mupdf.fz_close_device(dev)
     # Use special raw Pixmap constructor so we don't set alpha to true.
     return Pixmap( 'raw', pix)
 
