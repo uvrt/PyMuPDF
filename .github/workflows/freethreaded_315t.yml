@@ -89,8 +89,11 @@ jobs:
         run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
       - name: Fonts for the generated corpus, Tesseract data
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei tesseract-ocr-eng
-          echo "TESSDATA=$(dirname "$(find /usr/share/tesseract-ocr -name eng.traineddata | head -1)")" >> "$GITHUB_ENV"
+          sudo apt-get update -q && sudo apt-get install -yq fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+          # Only the language data, unpacked privately (no tesseract binary, which PyMuPDF would
+          # find and then OCR pages during to_markdown); used by stress_ocr.py alone.
+          (cd "$RUNNER_TEMP" && apt-get download tesseract-ocr-eng && dpkg -x tesseract-ocr-eng_*.deb tess)
+          echo "OCR_TESSDATA=$(dirname "$(find "$RUNNER_TEMP/tess" -name eng.traineddata | head -1)")" >> "$GITHUB_ENV"
       # PyPI has no onnxruntime for 3.15, so the reference side is the official wheel on 3.14.
       - uses: actions/setup-python@v5
         with:

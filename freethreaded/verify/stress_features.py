@@ -21,3 +21,4 @@ t0 = time.perf_counter()
 with ThreadPoolExecutor(N) as ex:
     res = list(ex.map(job, range(R * len(keys))))
 print(f"threads={N} gil={sys._is_gil_enabled()} jobs={len(res)} calls={sum(r[0] for r in res)} mismatched={sum(r[1] for r in res)} wall={time.perf_counter()-t0:.1f}s")
+sys.exit(1 if sum(r[1] for r in res) else 0)

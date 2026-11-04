@@ -19,3 +19,4 @@ for (name, pno), calls in sorted(rec.items()):
             for k in diff: badfeat[k] = badfeat.get(k, 0) + 1
 print(f"python={sys.version.split()[0]} gil={getattr(sys,'_is_gil_enabled',lambda:True)()} pages={len(rec)} calls={n} "
       f"fields/call={len(exp)} exact={n-bad} mismatched={bad} {badfeat}")
+sys.exit(1 if bad or not n else 0)

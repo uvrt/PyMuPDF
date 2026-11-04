@@ -32,7 +32,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Environment
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq gdb fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei tesseract-ocr-eng
+          sudo apt-get update -q && sudo apt-get install -yq gdb fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+          (cd "$RUNNER_TEMP" && apt-get download tesseract-ocr-eng && dpkg -x tesseract-ocr-eng_*.deb tess)
           curl -fsSL -o "$RUNNER_TEMP/pbs.tgz" "$PBS_URL" && echo "$PBS_SHA256  $RUNNER_TEMP/pbs.tgz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/py315t" && tar xzf "$RUNNER_TEMP/pbs.tgz" -C "$RUNNER_TEMP/py315t"
           # TSan needs a fixed memory layout.
@@ -78,7 +79,7 @@ jobs:
           MUPDF_indep_ctx=1 run "corpus indep=1" "$V/stress_render.py" corpus 4 1
           MAX_PAGES=4 run "docs indep=0" "$V/stress_render.py" ../docs 4 1
           MAX_PAGES=4 MUPDF_indep_ctx=1 run "docs indep=1" "$V/stress_render.py" ../docs 4 1
-          run "ocr" "$V/stress_ocr.py" corpus 4 1 "$(dirname "$(find /usr/share/tesseract-ocr -name eng.traineddata | head -1)")"
+          run "ocr" "$V/stress_ocr.py" corpus 4 1 "$(dirname "$(find "$RUNNER_TEMP/tess" -name eng.traineddata | head -1)")"
           ls -l
           exit $FAIL
       - name: Summarise reports

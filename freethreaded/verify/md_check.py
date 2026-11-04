@@ -21,6 +21,7 @@ def job(i):
     md = pymupdf4llm.to_markdown(doc, pages=page_numbers(doc), show_progress=False)
     doc.close()
     return f, md == ref[f]
+failed = False
 for n in NS:
     t0 = time.perf_counter()
     with ThreadPoolExecutor(n) as ex:
@@ -28,3 +29,5 @@ for n in NS:
     bad = sorted({f for f, ok in res if not ok})
     print(f"{VARIANT} threads={n} gil={getattr(sys,'_is_gil_enabled',lambda:True)()} jobs={len(res)} identical={sum(ok for _, ok in res)} "
           f"different={len(res)-sum(ok for _, ok in res)} wall={time.perf_counter()-t0:.1f}s {bad[:5]}", flush=True)
+    failed = failed or bool(bad)
+sys.exit(1 if failed else 0)
