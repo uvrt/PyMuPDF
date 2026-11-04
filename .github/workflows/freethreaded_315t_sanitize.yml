@@ -1,0 +1,88 @@
+name: free-threaded 3.15t sanitizers
+
+# Diagnoses crashes and data races in the 3.15t build: builds MuPDF and the bindings with
+# AddressSanitizer or ThreadSanitizer and runs the thread stress tests under them. The
+# sanitizer runtime is preloaded into the (uninstrumented) interpreter. Reports are uploaded.
+
+on:
+  push:
+    branches: [python-3.15t]
+    paths: ['freethreaded/patches/mupdf-*', '.github/workflows/freethreaded_315t_sanitize.yml']
+  workflow_dispatch:
+
+env:
+  PBS_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.15.2%2B20261026-x86_64-unknown-linux-gnu-freethreaded-install_only.tar.gz
+  PBS_SHA256: 8da464230c40e9026e2a5abfdef34454d580b839f922f1f0add8fd2f06d98181
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: asan-atomic, san: address, atomic: '1'}
+          - {name: asan-base, san: address, atomic: '0'}
+          - {name: tsan-base, san: thread, atomic: '0'}
+          - {name: tsan-atomic, san: thread, atomic: '1'}
+    env:
+      PYMUPDF_FT_ATOMIC_REFCOUNTS: ${{ matrix.atomic }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq gdb fonts-dejavu-core fonts-liberation fonts-crosextra-carlito fonts-wqy-zenhei
+          curl -fsSL -o "$RUNNER_TEMP/pbs.tgz" "$PBS_URL" && echo "$PBS_SHA256  $RUNNER_TEMP/pbs.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/py315t" && tar xzf "$RUNNER_TEMP/pbs.tgz" -C "$RUNNER_TEMP/py315t"
+          # TSan needs a fixed memory layout.
+          sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Build PyMuPDF with -fsanitize=${{ matrix.san }}
+        run: |
+          F="-g -O1 -fno-omit-frame-pointer -fsanitize=${{ matrix.san }}"
+          export XCFLAGS="$F" XCXXFLAGS="$F" XLIB_LDFLAGS="-fsanitize=${{ matrix.san }}" CFLAGS="$F" LDFLAGS="-fsanitize=${{ matrix.san }}"
+          freethreaded/scripts/build_pymupdf.sh "$RUNNER_TEMP/py315t/python/bin/python3.15t" "$RUNNER_TEMP/work"
+          "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/ours"
+          "$RUNNER_TEMP/ours/bin/pip" install -q "$RUNNER_TEMP"/work/dist/pymupdf-*.whl
+      - name: Test PDFs
+        uses: actions/cache@v4
+        with:
+          path: docs
+          key: testdocs-${{ hashFiles('freethreaded/testdocs/manifest.json') }}
+      - name: Fetch test PDFs
+        run: python3 -I freethreaded/verify/fetch_docs.py freethreaded/testdocs/manifest.json docs
+      - name: Stress under ${{ matrix.san }} sanitizer
+        shell: bash
+        run: |
+          PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; mkdir -p san && cd san
+          export PYTHONPATH="$V" PYTHONMALLOC=malloc
+          export LD_PRELOAD="$(gcc -print-file-name=lib${{ matrix.san == 'address' && 'asan' || 'tsan' }}.so)"
+          export ASAN_OPTIONS="detect_leaks=0:abort_on_error=0:halt_on_error=1:log_path=$PWD/asan:print_summary=1"
+          export TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:history_size=4:log_path=$PWD/tsan:second_deadlock_stack=1"
+          "$PY" -I "$V/gen_corpus.py" corpus 0 24
+          run() {  # label, args...
+            local l=$1; shift
+            echo "=== $l" | tee -a ../san.txt
+            timeout 2400 "$PY" "$@" 2>&1 | tail -20 | tee -a ../san.txt || echo "exit ${PIPESTATUS[0]}" | tee -a ../san.txt
+          }
+          run "corpus indep=0" "$V/stress_render.py" corpus 4 2
+          MUPDF_indep_ctx=1 run "corpus indep=1" "$V/stress_render.py" corpus 4 1
+          MAX_PAGES=4 run "docs indep=0" "$V/stress_render.py" ../docs 4 1
+          MAX_PAGES=4 MUPDF_indep_ctx=1 run "docs indep=1" "$V/stress_render.py" ../docs 4 1
+          ls -l
+      - name: Summarise reports
+        if: always()
+        shell: bash
+        run: |
+          cd san 2>/dev/null || exit 0
+          for f in asan.* tsan.*; do [ -f "$f" ] || continue; echo "##### $f"; grep -E "^(==|WARNING|ERROR|SUMMARY)|^    #[0-9]+ " "$f" | head -400; done > ../san-summary.txt || true
+          grep -h "^SUMMARY" asan.* tsan.* 2>/dev/null | sort | uniq -c | sort -rn | head -60 | tee -a ../san.txt || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitize-${{ matrix.name }}
+          path: |
+            san.txt
+            san-summary.txt
+            san/asan.*
+            san/tsan.*
