@@ -62,7 +62,9 @@ jobs:
         run: |
           PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; mkdir -p san && cd san
           export PYTHONPATH="$V"   # (free-threaded CPython supports only mimalloc; MuPDF uses malloc)
-          export LD_PRELOAD="$(gcc -print-file-name=lib${{ matrix.san == 'address' && 'asan' || 'tsan' }}.so)"
+          # libstdc++ too: python3.15t doesn't link it, and the sanitizer's __cxa_throw
+          # interceptor needs the real one at start-up ("real___cxa_throw != 0" CHECK).
+          export LD_PRELOAD="$(gcc -print-file-name=lib${{ matrix.san == 'address' && 'asan' || 'tsan' }}.so):$(g++ -print-file-name=libstdc++.so.6)"
           export ASAN_OPTIONS="detect_leaks=0:abort_on_error=0:halt_on_error=1:log_path=$PWD/asan:print_summary=1"
           export TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:history_size=4:log_path=$PWD/tsan:second_deadlock_stack=1"
           "$PY" -I "$V/gen_corpus.py" corpus 0 24
