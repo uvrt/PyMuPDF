@@ -61,15 +61,18 @@ jobs:
         shell: bash
         run: |
           PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; mkdir -p san && cd san
-          export PYTHONPATH="$V" PYTHONMALLOC=malloc
+          export PYTHONPATH="$V"   # (free-threaded CPython supports only mimalloc; MuPDF uses malloc)
           export LD_PRELOAD="$(gcc -print-file-name=lib${{ matrix.san == 'address' && 'asan' || 'tsan' }}.so)"
           export ASAN_OPTIONS="detect_leaks=0:abort_on_error=0:halt_on_error=1:log_path=$PWD/asan:print_summary=1"
           export TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:history_size=4:log_path=$PWD/tsan:second_deadlock_stack=1"
           "$PY" -I "$V/gen_corpus.py" corpus 0 24
+          set +e; FAIL=0
           run() {  # label, args...
-            local l=$1; shift
+            local l=$1 rc; shift
             echo "=== $l" | tee -a ../san.txt
-            timeout 2400 "$PY" "$@" 2>&1 | tail -20 | tee -a ../san.txt || echo "exit ${PIPESTATUS[0]}" | tee -a ../san.txt
+            timeout 2400 "$PY" "$@" > out.txt 2>&1; rc=$?
+            tail -20 out.txt | tee -a ../san.txt; echo "exit $rc" | tee -a ../san.txt
+            [ $rc = 0 ] || FAIL=1
           }
           run "corpus indep=0" "$V/stress_render.py" corpus 4 2
           MUPDF_indep_ctx=1 run "corpus indep=1" "$V/stress_render.py" corpus 4 1
@@ -77,6 +80,7 @@ jobs:
           MAX_PAGES=4 MUPDF_indep_ctx=1 run "docs indep=1" "$V/stress_render.py" ../docs 4 1
           run "ocr" "$V/stress_ocr.py" corpus 4 1 "$(dirname "$(find /usr/share/tesseract-ocr -name eng.traineddata | head -1)")"
           ls -l
+          exit $FAIL
       - name: Summarise reports
         if: always()
         shell: bash
