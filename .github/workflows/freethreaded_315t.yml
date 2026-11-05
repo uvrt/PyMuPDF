@@ -359,6 +359,9 @@ jobs:
           "$RUNNER_TEMP/ours/bin/python" "$B" "$D" 5 1 2>&1 | grep -v "parser messages\|RapidOCR\|^$" | tee "$GITHUB_WORKSPACE/leaks.txt"
           "$RUNNER_TEMP/ours/bin/python" "$B" "$D" 5 4 2>&1 | grep -v "parser messages\|RapidOCR\|^$" | tee -a "$GITHUB_WORKSPACE/leaks.txt"
           "$RUNNER_TEMP/official/bin/python" "$B" "$D" 5 1 2>&1 | grep -v "parser messages\|RapidOCR\|^$" | tee -a "$GITHUB_WORKSPACE/leaks.txt"
+          R="$GITHUB_WORKSPACE/freethreaded/verify/refs_probe.py"
+          "$RUNNER_TEMP/ours/bin/python" "$R" "$D" 6 2>&1 |grep -v "parser messages\|RapidOCR\|^$" | tee -a "$GITHUB_WORKSPACE/leaks.txt"
+          "$RUNNER_TEMP/official/bin/python" "$R" "$D" 6 2>&1 |grep -v "parser messages\|RapidOCR\|^$" | tee -a "$GITHUB_WORKSPACE/leaks.txt"
           true
       - if: always()
         uses: actions/upload-artifact@v4
