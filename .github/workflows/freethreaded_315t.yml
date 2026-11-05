@@ -170,6 +170,22 @@ jobs:
           MAX_PAGES=6 PYMUPDF_LAYOUT_ORT_THREADS=0 "$PY" "$V/profile_md.py" ../docs 45 1,4 docs_ort_default.json 2>&1 | tee -a ../profile.txt
           MAX_PAGES=6 PROFILE_GC=off "$PY" "$V/profile_md.py" ../docs 45 1,4 docs_gc_off.json 2>&1 | tee -a ../profile.txt
           for indep in 0 1; do MAX_PAGES=4 MUPDF_indep_ctx=$indep "$PY" "$V/stress_render.py" ../docs 1,2,4 1 2>&1 | tee -a ../profile.txt; done
+      - name: MuPDF lock contention (MUPDF_lock_stats=1)
+        continue-on-error: true
+        shell: bash
+        run: |
+          PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; cd prof; export PYTHONPATH="$V"
+          set +e +o pipefail
+          {
+            for n in 1 4; do
+              echo "## render+text, generated corpus, $n threads, shared context"
+              MUPDF_lock_stats=1 "$PY" "$V/stress_render.py" corpus $n 1 2>&1 | grep -E "^threads=|lock stats"
+              echo "## render+text, real PDFs (4 pages), $n threads, shared context"
+              MAX_PAGES=4 MUPDF_lock_stats=1 "$PY" "$V/stress_render.py" ../docs $n 1 2>&1 | grep -E "^threads=|lock stats"
+            done
+            echo "## to_markdown, generated corpus, 4 threads"
+            MUPDF_lock_stats=1 "$PY" "$V/profile_md.py" corpus 16 4 2>&1 | grep -E "^threads=|lock stats"
+          } | tee ../lock_stats.txt
       - name: Sampling profiler (wall clock, all threads)
         continue-on-error: true
         shell: bash
@@ -227,6 +243,7 @@ jobs:
             profile.txt
             perf_*.txt
             threads_md.txt
+            lock_stats.txt
             sampling_*.txt
             prof/*.json
 
