@@ -1,10 +1,13 @@
 """Soak test: THREADS threads run a mixed workload (to_markdown with layout, rendering in
 three colorspaces, text, rawdict, tables) for MINUTES, each result checked against a
 sequential reference; the process RSS is sampled every 30 s.
-Fails on any wrong result, or when memory keeps growing: the RSS slope over the second half
-of the run (after caches have filled) must stay under MAX_MB_PER_HOUR (default 50).
+Fails on any wrong result, or when memory keeps growing. Memory is compared by quarters, after
+caches have filled: the mean of the last quarter may exceed the mean of the second quarter by
+at most 10% (and at least 100 MB), both for glibc's bytes in use (a leak) and for RSS. Swings
+of a few hundred MB, as large pages come and go, don't trip it; a steady leak does (checked on
+the runs before and after the layout font leak fix: +400..785 MB vs +10..76 MB).
 Each sample also records, to tell a leak from fragmentation: glibc's bytes in use and heap
-reserved (mallinfo2), Python's live objects (sys.getallocatedblocks) and MuPDF's store size;
+reserved (mallinfo2) and Python's live objects (sys.getallocatedblocks);
 at the end, the object types whose count grew most.
 SOAK_MODE: mix (default), md (to_markdown only) or render (rendering and text only).
 usage: python soak.py PDFDIR THREADS MINUTES [OUT.csv]"""
@@ -15,7 +18,6 @@ from common import page_numbers
 
 pdfdir, N, MINUTES = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
 OUT = sys.argv[4] if len(sys.argv) > 4 else None
-MAX_SLOPE = float(os.environ.get("MAX_MB_PER_HOUR", "50"))
 MODE = os.environ.get("SOAK_MODE", "mix")
 
 
@@ -37,13 +39,6 @@ def malloc_mb():
         return float("nan"), float("nan")
     m = _libc.mallinfo2()
     return (m.uordblks + m.hblkhd) / 2**20, (m.arena + m.hblkhd) / 2**20
-
-
-def store_mb():
-    try:
-        return pymupdf.mupdf.ll_fz_store_size() / 2**20 if hasattr(pymupdf.mupdf, "ll_fz_store_size") else float("nan")
-    except Exception:
-        return float("nan")
 
 
 def type_counts():
@@ -99,9 +94,9 @@ samples = []
 while any(t.is_alive() for t in threads):
     used, reserved = malloc_mb()
     samples.append((time.monotonic() - t0, proc.memory_info().rss / 2**20, stats["jobs"], used, reserved,
-                    sys.getallocatedblocks(), store_mb()))
+                    sys.getallocatedblocks()))
     print(f"t={samples[-1][0]:7.0f}s rss={samples[-1][1]:8.1f} MB jobs={samples[-1][2]} malloc_used={used:8.1f} MB "
-          f"malloc_reserved={reserved:8.1f} MB py_blocks={samples[-1][5]} store={samples[-1][6]:.1f} MB", flush=True)
+          f"malloc_reserved={reserved:8.1f} MB py_blocks={samples[-1][5]}", flush=True)
     for _ in range(30):
         if not any(t.is_alive() for t in threads):
             break
@@ -121,19 +116,32 @@ def slope(col):
     return sum((s[0] - mx) * (s[col] - my) for s in half) / max(sum((s[0] - mx) ** 2 for s in half), 1e-9) * 3600
 
 
-rss_slope = slope(1)
+def quarter_growth(col):
+    """(mean of the second quarter, mean of the last quarter, allowed growth), in MB."""
+    end = samples[-1][0]
+    q2 = [s[col] for s in samples if end / 4 <= s[0] < end / 2]
+    q4 = [s[col] for s in samples if s[0] >= 3 * end / 4]
+    if not q2 or not q4:
+        return 0.0, 0.0, float("inf")
+    m2, m4 = sum(q2) / len(q2), sum(q4) / len(q4)
+    return m2, m4, max(100.0, 0.10 * m2)
+
+
+rss_q = quarter_growth(1)
+used_q = quarter_growth(3)
 if OUT:
     with open(OUT, "w") as f:
-        f.write("seconds,rss_mb,jobs,malloc_used_mb,malloc_reserved_mb,py_blocks,store_mb\n"
+        f.write("seconds,rss_mb,jobs,malloc_used_mb,malloc_reserved_mb,py_blocks\n"
                 + "".join(",".join(f"{v:.1f}" if isinstance(v, float) else str(v) for v in s) + "\n" for s in samples))
 gc.collect()
 grown = (type_counts() - types0).most_common(12)
 peak = max(s[1] for s in samples)
 print(f"soak mode={MODE} threads={N} minutes={MINUTES:g} jobs={stats['jobs']} wrong={stats['bad']} peak_rss={peak:.0f} MB "
       f"MALLOC_ARENA_MAX={os.environ.get('MALLOC_ARENA_MAX', '-')}", flush=True)
-print(f"second-half slopes per hour: rss {rss_slope:+.1f} MB, malloc in use {slope(3):+.1f} MB, "
-      f"malloc reserved {slope(4):+.1f} MB, python blocks {slope(5):+.0f}, store {slope(6):+.1f} MB "
-      f"(limit on rss {MAX_SLOPE:g} MB)", flush=True)
+print(f"second-half slopes per hour (information): rss {slope(1):+.1f} MB, malloc in use {slope(3):+.1f} MB, "
+      f"malloc reserved {slope(4):+.1f} MB, python blocks {slope(5):+.0f}", flush=True)
+grew = [f"{name}: {q[0]:.0f} -> {q[1]:.0f} MB (allowed +{q[2]:.0f})" for name, q in (("malloc in use", used_q), ("rss", rss_q))]
+leak = used_q[1] - used_q[0] > used_q[2] or rss_q[1] - rss_q[0] > rss_q[2]
+print("memory, second quarter -> last quarter: " + "; ".join(grew) + (" GROWING" if leak else " flat"), flush=True)
 print("python object types grown since start:", ", ".join(f"{t} +{n}" for t, n in grown) or "none", flush=True)
-slope = rss_slope
-sys.exit(1 if stats["bad"] or slope > MAX_SLOPE else 0)
+sys.exit(1 if stats["bad"] or leak else 0)
