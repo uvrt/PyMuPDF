@@ -30,7 +30,7 @@ LLM_COMMIT=030a6b0ac449266a67b79675272fb877a34a87ab     # the git_sha in the off
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 fetch() {  # url sha256 file
-    if [ ! -f "$3" ]; then curl -fsSL -o "$3.part" "$1" && mv "$3.part" "$3"; fi
+    if [ ! -f "$3" ]; then curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors -o "$3.part" "$1" && mv "$3.part" "$3"; fi
     echo "$2  $3" | sha256
 }
 checkout() {  # repo commit dir patch
