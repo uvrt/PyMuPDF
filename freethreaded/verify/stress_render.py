@@ -1,7 +1,8 @@
 """Thread stress and throughput for rendering and text extraction (no layout model).
 Each job opens its own document; per page it renders in RGB, GRAY and CMYK (the module-level
 csRGB/csGRAY/csCMYK colorspaces), extracts text and image info, and then either character boxes
-(rawdict) or tables (find_tables), so both run at once in different threads. Every hash must
+(rawdict, get_texttrace) or tables and vector graphics (find_tables, get_drawings), so both
+run at once in different threads. Every hash must
 equal the sequential run.
 A fresh thread pool per round makes threads start and exit, which drops thread-local objects.
 usage: python stress_render.py PDFDIR THREADS[,..] ROUNDS
@@ -26,8 +27,10 @@ def job(i):
         h.update(repr(page.get_image_info()).encode())
         if (i // len(files)) % 2 == 0:
             h.update(repr(page.get_text("rawdict")).encode())
+            h.update(repr(page.get_texttrace()).encode())
         else:
             h.update(repr([t.extract() for t in page.find_tables(use_layout=False)]).encode())
+            h.update(repr(page.get_drawings()).encode())
     doc.close()
     return i, h.hexdigest()
 t0 = time.perf_counter()

@@ -33,7 +33,7 @@
   * the freeetype lock. */
 --- a/scripts/wrap/cpp.py
 +++ b/scripts/wrap/cpp.py
-@@ -1608,7 +1608,22 @@
+@@ -1608,6 +1608,27 @@
  
              /** Internal use only. Returns `fz_context*` for use by current thread. */
              FZ_FUNCTION fz_context* {rename.internal('context_get')}();
@@ -42,7 +42,7 @@
 +            callback on the calling thread's context and on the base context
 +            from which later threads' contexts are made. */
 +            FZ_FUNCTION void {rename.internal('set_diagnostic_callback')}(int is_error, fz_warning_cb* print, void* user);
- 
++
 +            /** Internal use only. Queues a diagnostic on the calling thread,
 +            for a callback that must not run now (its thread is detached from
 +            an interpreter, and may hold a MuPDF lock).
@@ -53,10 +53,15 @@
 +            in the order they were queued. */
 +            FZ_FUNCTION void {rename.internal('diagnostics_flush')}();
 +
++            /** Internal use only. Number of MuPDF locks (fz_lock) the calling
++            thread holds now. Code that may wait for something else (such as
++            an interpreter's stop-the-world pause) must not do so while this is
++            non-zero. */
++            FZ_FUNCTION int {rename.internal('locks_held')}();
+ 
              /* Internal, do not call directly. */
              FZ_FUNCTION void {rename.internal('check_ndebug0')}(bool caller_ndebug_defined);
- 
-@@ -1638,6 +1653,11 @@
+@@ -1638,6 +1659,11 @@
              #include <iostream>
              #include <thread>
              #include <mutex>
@@ -68,7 +73,7 @@
  
              #include <string.h>
  
-@@ -1706,6 +1726,36 @@
+@@ -1706,7 +1732,41 @@
              #endif
  
              static bool s_state_valid = false;
@@ -85,6 +90,10 @@
 +            }};
 +            static internal_lock_stats_t s_lock_stats;
 +            static std::atomic<bool> s_lock_stats_on( false);
+ 
++            /* Free-threading patch: MuPDF locks held by this thread (see
++            {rename.internal("locks_held")}()). */
++            static thread_local int s_locks_held = 0;
 +
 +            static void s_lock_stats_print()
 +            {{
@@ -102,10 +111,11 @@
 +                            name, a, c, 100.0 * c / a, s_lock_stats.wait_ns[i] / 1e9);
 +                }}
 +            }}
- 
++
              struct {rename.internal("state")}
              {{
-@@ -1716,6 +1766,14 @@
+                 /* Constructor. */
+@@ -1716,6 +1776,14 @@
                      m_locks.lock = lock;
                      m_locks.unlock = unlock;
                      m_ctx = nullptr;
@@ -120,10 +130,11 @@
                      bool multithreaded = true;
                      const char* s = getenv( "MUPDF_mt_ctx");
                      if ( s && !strcmp( s, "0")) multithreaded = false;
-@@ -1755,7 +1813,21 @@
+@@ -1755,13 +1823,29 @@
                  {{
                      {rename.internal("state")}*    self = ({rename.internal("state")}*) user;
                      internal_assert( self->m_multithreaded);
++                    s_locks_held += 1;
 +                    if (!s_lock_stats_on.load( std::memory_order_relaxed))
 +                    {{
 +                        self->m_mutexes[lock].lock();
@@ -142,7 +153,14 @@
                  }}
                  static void unlock(void *user, int lock)
                  {{
-@@ -1786,6 +1858,11 @@
+                     {rename.internal("state")}*    self = ({rename.internal("state")}*) user;
+                     internal_assert( self->m_multithreaded);
+                     self->m_mutexes[lock].unlock();
++                    s_locks_held -= 1;
+                 }}
+                 ~{rename.internal("state")}()
+                 {{
+@@ -1786,6 +1870,11 @@
  
              static {rename.internal("state")}  s_state;
  
@@ -154,7 +172,7 @@
              struct {rename.internal("thread_state")}
              {{
                  {rename.internal("thread_state")}()
-@@ -1830,7 +1907,19 @@
+@@ -1830,7 +1919,19 @@
                                      << " calling fz_clone_context()\\n";
                          }}
                          internal_assert(s_state_valid);
@@ -175,7 +193,7 @@
                          if (s_trace)
                          {{
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
-@@ -1850,6 +1939,11 @@
+@@ -1850,6 +1951,11 @@
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
                                      << " calling fz_drop_context()\\n";
                          }}
@@ -187,10 +205,11 @@
                          fz_drop_context( m_ctx);
                      }}
  
-@@ -1871,6 +1965,46 @@
+@@ -1870,7 +1976,52 @@
+             }};
  
              static thread_local {rename.internal("thread_state")}  s_thread_state;
- 
++
 +            FZ_FUNCTION void {rename.internal("set_diagnostic_callback")}(int is_error, fz_warning_cb* print, void* user)
 +            {{
 +                fz_context* ctx = {rename.internal("context_get")}();
@@ -204,7 +223,7 @@
 +                    else            fz_set_warning_callback(s_state.m_ctx, print, user);
 +                }}
 +            }}
-+
+ 
 +            /* Free-threading patch: diagnostics queued by threads detached from
 +            the interpreter (see {rename.internal("diagnostic_defer")}). */
 +            struct {rename.internal("deferred_diagnostic")}
@@ -218,6 +237,11 @@
 +            FZ_FUNCTION void {rename.internal("diagnostic_defer")}(fz_warning_cb* print, void* user, const char* message)
 +            {{
 +                s_deferred_diagnostics.push_back( {{ print, user, message ? message : "" }});
++            }}
++
++            FZ_FUNCTION int {rename.internal("locks_held")}()
++            {{
++                return s_locks_held;
 +            }}
 +
 +            FZ_FUNCTION void {rename.internal("diagnostics_flush")}()

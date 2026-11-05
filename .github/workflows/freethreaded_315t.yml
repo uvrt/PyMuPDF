@@ -135,6 +135,8 @@ jobs:
       fail-fast: false
       matrix:
         variant: [base, atomic]
+    env:
+      BASELINE_RUN: '42053069336'   # an earlier green run, for before/after comparisons
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -197,6 +199,31 @@ jobs:
             echo "## to_markdown, generated corpus, 4 threads"
             MUPDF_lock_stats=1 "$PY" "$V/profile_md.py" corpus 16 4 2>&1 | grep -E "^threads=|lock stats"
           } | tee ../lock_stats.txt
+      - name: Baseline build for comparison (run ${{ env.BASELINE_RUN }})
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: pymupdf-cp315t-base
+          path: baseline-wheels
+          run-id: ${{ env.BASELINE_RUN }}
+          github-token: ${{ github.token }}
+      - name: GC pauses during long MuPDF calls
+        continue-on-error: true
+        shell: bash
+        run: |
+          PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; cd prof
+          set +e +o pipefail
+          {
+            for op in none get_drawings get_text_dict get_textpage get_pixmap; do
+              "$PY" "$V/gc_pause.py" ../docs $op 3 20 2>&1 | grep "^gc_pause"
+            done
+            if ls ../baseline-wheels/pymupdf-*.whl >/dev/null 2>&1; then
+              "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/baseline"
+              "$RUNNER_TEMP/baseline/bin/pip" install -q --no-deps ../baseline-wheels/pymupdf-*.whl
+              echo "## baseline: run $BASELINE_RUN (before the device-callback safepoints)"
+              "$RUNNER_TEMP/baseline/bin/python" "$V/gc_pause.py" ../docs get_drawings 3 20 2>&1 | grep "^gc_pause"
+            fi
+          } | tee ../gc_pause.txt
       - name: Sampling profiler (wall clock, all threads)
         continue-on-error: true
         shell: bash
@@ -255,6 +282,7 @@ jobs:
             perf_*.txt
             threads_md.txt
             lock_stats.txt
+            gc_pause.txt
             sampling_*.txt
             prof/*.json
 
