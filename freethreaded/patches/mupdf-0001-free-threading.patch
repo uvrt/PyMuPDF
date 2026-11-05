@@ -73,11 +73,10 @@
  
              #include <string.h>
  
-@@ -1706,7 +1732,41 @@
-             #endif
+@@ -1707,6 +1733,40 @@
  
              static bool s_state_valid = false;
-+
+ 
 +            /* Free-threading patch: MUPDF_lock_stats=1 counts, per MuPDF lock
 +            (FZ_LOCK_ALLOC, _FREETYPE, _GLYPHCACHE), the acquisitions, those that
 +            found the lock held, and the time spent waiting, and prints them to
@@ -90,7 +89,7 @@
 +            }};
 +            static internal_lock_stats_t s_lock_stats;
 +            static std::atomic<bool> s_lock_stats_on( false);
- 
++
 +            /* Free-threading patch: MuPDF locks held by this thread (see
 +            {rename.internal("locks_held")}()). */
 +            static thread_local int s_locks_held = 0;
@@ -172,28 +171,7 @@
              struct {rename.internal("thread_state")}
              {{
                  {rename.internal("thread_state")}()
-@@ -1830,7 +1919,19 @@
-                                     << " calling fz_clone_context()\\n";
-                         }}
-                         internal_assert(s_state_valid);
--                        m_ctx = fz_clone_context(s_state.m_ctx);
-+                        {{ static const char* indep = getenv("MUPDF_indep_ctx");
-+                        if (indep && !strcmp(indep, "1")) {{
-+                            /* PATCH: fully independent per-thread context: no shared alloc lock/store. */
-+                            m_ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
-+                            if (m_ctx) {{
-+                                fz_register_document_handlers(m_ctx);
-+                                /* Clones inherit the base context's callbacks; do the same. */
-+                                fz_set_warning_callback(m_ctx, s_state.m_ctx->warn.print, s_state.m_ctx->warn.print_user);
-+                                fz_set_error_callback(m_ctx, s_state.m_ctx->error.print, s_state.m_ctx->error.print_user);
-+                            }}
-+                        }} else {{
-+                            m_ctx = fz_clone_context(s_state.m_ctx);
-+                        }} }}
-                         if (s_trace)
-                         {{
-                             std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
-@@ -1850,6 +1951,11 @@
+@@ -1850,6 +1939,11 @@
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
                                      << " calling fz_drop_context()\\n";
                          }}
@@ -205,11 +183,10 @@
                          fz_drop_context( m_ctx);
                      }}
  
-@@ -1870,7 +1976,52 @@
-             }};
+@@ -1871,6 +1965,51 @@
  
              static thread_local {rename.internal("thread_state")}  s_thread_state;
-+
+ 
 +            FZ_FUNCTION void {rename.internal("set_diagnostic_callback")}(int is_error, fz_warning_cb* print, void* user)
 +            {{
 +                fz_context* ctx = {rename.internal("context_get")}();
@@ -223,7 +200,7 @@
 +                    else            fz_set_warning_callback(s_state.m_ctx, print, user);
 +                }}
 +            }}
- 
++
 +            /* Free-threading patch: diagnostics queued by threads detached from
 +            the interpreter (see {rename.internal("diagnostic_defer")}). */
 +            struct {rename.internal("deferred_diagnostic")}
@@ -919,13 +896,15 @@
  					 * have rendered in the meantime */
 --- a/source/fitz/harfbuzz.c
 +++ b/source/fitz/harfbuzz.c
-@@ -124,7 +124,14 @@
+@@ -124,7 +124,16 @@
   * problems that for now, we'll just forbid it.
   */
  
 -static fz_context *fz_hb_secret = NULL;
-+/* Free-threading patch: per thread, so that contexts with different
-+ * FZ_LOCK_FREETYPE locks don't overwrite each other's allocator context. */
++/* Free-threading patch: per thread. HarfBuzz runs under fz_hb_lock (the full
++ * FreeType lock), but a context pointer that belongs to one thread should not
++ * be readable, or clearable, by another; this keeps it correct whichever lock
++ * MuPDF uses around HarfBuzz. */
 +#if defined(_MSC_VER)
 +#define FZ_THREAD_LOCAL __declspec(thread)
 +#else

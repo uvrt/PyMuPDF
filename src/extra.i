@@ -111,8 +111,9 @@ DiagnosticCallback (patches/mupdf-0001) and delivered to Python by JM_attach(),
 in order: calling Python from detached code that may hold a MuPDF lock could
 deadlock with a stop-the-world pause. Code that must stay attached for long
 (get_text dict blocks, and the callbacks of the C devices behind get_drawings,
-get_cdrawings and get_texttrace) calls JM_safepoint(), which lets a pending
-stop-the-world proceed; it never waits while the thread holds a MuPDF lock.
+get_cdrawings and get_texttrace) calls JM_safepoint() (per dict block) or
+JM_safepoint_often() (every 64th device callback), which let a pending
+stop-the-world proceed; they never wait while the thread holds a MuPDF lock.
 On GIL builds all of these do nothing: those calls keep the GIL, exactly as
 upstream PyMuPDF, so code that shares a Document between threads there keeps
 working as before. */
@@ -153,6 +154,19 @@ static inline void JM_safepoint()
     if (!PyThreadState_GetUnchecked() || mupdf::internal_locks_held())
         return;
     PyEval_RestoreThread(PyEval_SaveThread());
+#endif
+}
+
+/* For callbacks that run very often (C device callbacks: one per drawing
+command): a safepoint costs a detach and re-attach, a few microseconds, so take
+one only every 64 calls. A pending stop-the-world then waits for at most 64
+callbacks instead of a whole get_drawings() call. */
+static inline void JM_safepoint_often()
+{
+#ifdef Py_GIL_DISABLED
+    static thread_local unsigned jm_safepoint_calls = 0;
+    if ((++jm_safepoint_calls & 63) == 0)
+        JM_safepoint();
 #endif
 }
 
@@ -2043,7 +2057,7 @@ static void jm_fill_path(
         fz_color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
@@ -2056,7 +2070,7 @@ static void jm_fill_shade(
         fz_color_params color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
@@ -2069,7 +2083,7 @@ static void jm_fill_image(
         fz_color_params color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
@@ -2084,7 +2098,7 @@ static void jm_fill_image_mask(
         fz_color_params color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
@@ -2100,7 +2114,7 @@ static void jm_stroke_path(
         fz_color_params color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev_);
 }
 
@@ -2141,7 +2155,7 @@ jm_tracedraw_fill_text(
         fz_color_params color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_tracedraw_device* dev = (jm_tracedraw_device*) dev_;
     jm_trace_text(dev, text, 0, ctm, colorspace, color, alpha, dev->seqno, NULL);
     dev->seqno += 1;
@@ -2160,7 +2174,7 @@ jm_tracedraw_stroke_text(
         fz_color_params color_params
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_tracedraw_device* dev = (jm_tracedraw_device*) dev_;
     jm_trace_text(dev, text, 1, ctm, colorspace, color, alpha, dev->seqno, stroke);
     dev->seqno += 1;
@@ -2175,7 +2189,7 @@ jm_tracedraw_ignore_text(
         fz_matrix ctm
         )
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_tracedraw_device* dev = (jm_tracedraw_device*) dev_;
     jm_trace_text(dev, text, 3, ctm, nullptr, nullptr, 1, dev->seqno, NULL);
     dev->seqno += 1;
@@ -2184,7 +2198,7 @@ jm_tracedraw_ignore_text(
 static void
 jm_lineart_begin_layer(fz_context *ctx, fz_device *dev_, const char *name)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_tracedraw_device* dev = (jm_tracedraw_device*) dev_;
     mupdf::ll_fz_free(dev->layer_name);
     dev->layer_name = mupdf::ll_fz_strdup(name);
@@ -2193,7 +2207,7 @@ jm_lineart_begin_layer(fz_context *ctx, fz_device *dev_, const char *name)
 static void
 jm_lineart_end_layer(fz_context *ctx, fz_device *dev_)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_tracedraw_device* dev = (jm_tracedraw_device*) dev_;
     mupdf::ll_fz_free(dev->layer_name);
     dev->layer_name = nullptr;
@@ -2810,7 +2824,7 @@ jm_lineart_fill_path(fz_context *ctx, fz_device *dev_, const fz_path *path,
                 int even_odd, fz_matrix ctm, fz_colorspace *colorspace,
                 const float *color, float alpha, fz_color_params color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *) dev_;
     //printf("extra.jm_lineart_fill_path(): dev->seqno=%zi\n", dev->seqno);
     dev->ctm = ctm; //fz_concat(ctm, trace_device_ptm);
@@ -2839,7 +2853,7 @@ jm_lineart_stroke_path(fz_context *ctx, fz_device *dev_, const fz_path *path,
                 fz_colorspace *colorspace, const float *color, float alpha,
                 fz_color_params color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *)dev_;
     //printf("extra.jm_lineart_stroke_path(): dev->seqno=%zi\n", dev->seqno);
     int i;
@@ -2888,7 +2902,7 @@ jm_lineart_stroke_path(fz_context *ctx, fz_device *dev_, const fz_path *path,
 static void
 jm_lineart_clip_path(fz_context *ctx, fz_device *dev_, const fz_path *path, int even_odd, fz_matrix ctm, fz_rect scissor)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *)dev_;
     if (!dev->clips) return;
     dev->ctm = ctm; //fz_concat(ctm, trace_device_ptm);
@@ -2912,7 +2926,7 @@ jm_lineart_clip_path(fz_context *ctx, fz_device *dev_, const fz_path *path, int 
 static void
 jm_lineart_clip_stroke_path(fz_context *ctx, fz_device *dev_, const fz_path *path, const fz_stroke_state *stroke, fz_matrix ctm, fz_rect scissor)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *)dev_;
     if (!dev->clips) return;
     dev->ctm = ctm; //fz_concat(ctm, trace_device_ptm);
@@ -2937,7 +2951,7 @@ jm_lineart_clip_stroke_path(fz_context *ctx, fz_device *dev_, const fz_path *pat
 static void
 jm_lineart_clip_stroke_text(fz_context *ctx, fz_device *dev_, const fz_text *text, const fz_stroke_state *stroke, fz_matrix ctm, fz_rect scissor)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
    jm_lineart_device *dev = (jm_lineart_device *)dev_;
    if (!dev->clips) return;
    compute_scissor(dev);
@@ -2947,7 +2961,7 @@ jm_lineart_clip_stroke_text(fz_context *ctx, fz_device *dev_, const fz_text *tex
 static void
 jm_lineart_clip_text(fz_context *ctx, fz_device *dev_, const fz_text *text, fz_matrix ctm, fz_rect scissor)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
    jm_lineart_device *dev = (jm_lineart_device *)dev_;
    if (!dev->clips) return;
    compute_scissor(dev);
@@ -2957,7 +2971,7 @@ jm_lineart_clip_text(fz_context *ctx, fz_device *dev_, const fz_text *text, fz_m
 static void
 jm_lineart_clip_image_mask(fz_context *ctx, fz_device *dev_, fz_image *image, fz_matrix ctm, fz_rect scissor)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
    jm_lineart_device *dev = (jm_lineart_device *)dev_;
    if (!dev->clips) return;
    compute_scissor(dev);
@@ -2967,7 +2981,7 @@ jm_lineart_clip_image_mask(fz_context *ctx, fz_device *dev_, fz_image *image, fz
 static void
 jm_lineart_pop_clip(fz_context *ctx, fz_device *dev_)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *)dev_;
     if (!dev->clips) return;
     if (!dev->scissors) return;
@@ -2981,7 +2995,7 @@ jm_lineart_pop_clip(fz_context *ctx, fz_device *dev_)
 static void
 jm_lineart_begin_group(fz_context *ctx, fz_device *dev_, fz_rect bbox, fz_colorspace *cs, int isolated, int knockout, int blendmode, float alpha)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *)dev_;
     if (!dev->clips) return;
     dev->pathdict = Py_BuildValue("{s:s,s:N,s:N,s:N,s:s,s:f,s:i,s:N}",
@@ -3001,7 +3015,7 @@ jm_lineart_begin_group(fz_context *ctx, fz_device *dev_, fz_rect bbox, fz_colors
 static void
 jm_lineart_end_group(fz_context *ctx, fz_device *dev_)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_lineart_device *dev = (jm_lineart_device *)dev_;
     if (!dev->clips) return;
     dev->depth--;
@@ -3009,37 +3023,37 @@ jm_lineart_end_group(fz_context *ctx, fz_device *dev_)
 
 static void jm_lineart_fill_text(fz_context *ctx, fz_device *dev, const fz_text *, fz_matrix, fz_colorspace *, const float *color, float alpha, fz_color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
 static void jm_lineart_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *, const fz_stroke_state *, fz_matrix, fz_colorspace *, const float *color, float alpha, fz_color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
 static void jm_lineart_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *shd, fz_matrix ctm, float alpha, fz_color_params color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
 static void jm_lineart_fill_image(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix ctm, float alpha, fz_color_params color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
 static void jm_lineart_fill_image_mask(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix ctm, fz_colorspace *, const float *color, float alpha, fz_color_params color_params)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 
 static void jm_lineart_ignore_text(fz_context *ctx, fz_device *dev, const fz_text *, fz_matrix)
 {
-    JM_safepoint(); /* device callbacks run attached: let a pending GC pause proceed */
+    JM_safepoint_often(); /* device callbacks run attached: let a pending GC pause proceed */
     jm_increase_seqno(ctx, dev);
 }
 

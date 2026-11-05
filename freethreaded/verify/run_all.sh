@@ -12,8 +12,8 @@
 #   3. features bit-exact on all fields, development and held-out
 #   3b. store keys across documents (regress_store_keys.py): must pass on ours; the official
 #      wheel is run too, for information (upstream MuPDF has the bug)
-#   4. features thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
-#   5. rendering (RGB/GRAY/CMYK) + text extraction thread stress at 1/4/8 threads, MUPDF_indep_ctx 0 and 1
+#   4. features thread stress at 8 threads
+#   5. rendering (RGB/GRAY/CMYK) + text extraction thread stress at 1/4/8 threads
 #   (No OCR: keep Tesseract off the machine. If PyMuPDF finds it, pymupdf4llm OCRs pages and
 #    the recorded reference no longer matches the replay.)
 #   6. to_markdown byte-identical, one layout model per thread (built in), 1/4/8 threads x 3 rounds,
@@ -41,25 +41,17 @@ export PYTHONPATH="$V"   # for verify/common.py
 "$OURS" "$V/regress_store_keys.py" 8
 "$OFF" "$V/regress_store_keys.py" 1 || echo "(official wheel: fails as expected; the bug is in upstream MuPDF)"
 
-for indep in 0 1; do
-    MUPDF_indep_ctx=$indep "$OURS" "$V/stress_features.py" rec_dev.pkl corpus/dev 8 3
-done
+"$OURS" "$V/stress_features.py" rec_dev.pkl corpus/dev 8 3
 
-for indep in 0 1; do
-    MUPDF_indep_ctx=$indep "$OURS" "$V/stress_render.py" corpus/dev 1,4,8 3
-done
+"$OURS" "$V/stress_render.py" corpus/dev 1,4,8 3
 
-for indep in 0 1; do
-    MUPDF_indep_ctx=$indep "$OURS" "$V/md_check.py" corpus/heldout md_ref 1,4,8 3 perthread
-done
+"$OURS" "$V/md_check.py" corpus/heldout md_ref 1,4,8 3 perthread
 "$OURS" "$V/md_check.py" corpus/heldout md_ref 4 1 shipped
 
 if [ -n "${4:-}" ]; then
     D=$(cd "$4" && pwd)
     MAX_PAGES=12 "$OFF" "$V/record.py" "$D" rec_docs.pkl --md md_ref_docs
-    for indep in 0 1; do
-        MAX_PAGES=6 MUPDF_indep_ctx=$indep "$OURS" "$V/stress_render.py" "$D" 1,4 1
-    done
+    MAX_PAGES=6 "$OURS" "$V/stress_render.py" "$D" 1,4 1
     MAX_PAGES=12 "$OURS" "$V/md_check.py" "$D" md_ref_docs 1,4 2 perthread
 fi
 echo "ALL CHECKS PASSED"

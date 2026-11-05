@@ -92,7 +92,7 @@ def job(i):
 
 
 print(f"# python={sys.version.split()[0]} gil={sys._is_gil_enabled()} cpus={os.cpu_count()} "
-      f"indep_ctx={os.environ.get('MUPDF_indep_ctx', '0')} per_thread_model={pymupdf._get_layout_per_thread} "
+      f"per_thread_model={pymupdf._get_layout_per_thread} "
       f"ort_threads={os.environ.get('PYMUPDF_LAYOUT_ORT_THREADS', '1')} gc={'on' if gc.isenabled() else 'off'} "
       f"files={len(files)} jobs={JOBS}", flush=True)
 job(0)  # warm up the importing thread's model

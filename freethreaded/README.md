@@ -43,7 +43,7 @@ verifies and profiles both variants (`base` and `atomic`).
 | `table.py` `find_tables()`, `Table.header` | Changed the process-wide small-glyph-heights and quad-correction settings and restored them afterwards: other threads' text extraction used the wrong settings, and overlapping calls could leave a setting changed for good. | Per-thread overrides in Python and in `extra.i` (C `thread_local`); the process-wide values are untouched. |
 | `JM_image_reporter()` (`get_image_info`, called by the layout model on every page) | Collected results in module globals: concurrent calls lost or mixed up images. | Thread-local. |
 | `csRGB`, `csGRAY`, `csCMYK` | Made on the importing thread's context and refcounted from all threads. With `MUPDF_indep_ctx=1` that context's locks are no-ops. | Resolved to the calling thread's device colorspace on free-threaded builds. |
-| MuPDF warning/error callbacks | Installed on the importing thread's context only: other threads printed to stderr, ignored `TOOLS.mupdf_display_*`, never filled `TOOLS.mupdf_warnings()`, and `page.rect` could raise IndexError on pages with an invalid mediabox. | Installed on the base context that new threads' contexts are copied from, and copied into independent contexts. A no-op callback is installed before a thread's context is dropped, so flushing warnings never calls Python from a finished thread. |
+| MuPDF warning/error callbacks | Installed on the importing thread's context only: other threads printed to stderr, ignored `TOOLS.mupdf_display_*`, never filled `TOOLS.mupdf_warnings()`, and `page.rect` could raise IndexError on pages with an invalid mediabox. | Installed on the base context that new threads' contexts are copied from. A no-op callback is installed before a thread's context is dropped, so flushing warnings never calls Python from a finished thread. |
 | `Document()` | Hid errors by setting a global and restoring it, so concurrent opens could leave errors hidden for good. | Hidden per thread. |
 | `page.rect`, `convert_to_pdf` | Read the last or new warnings from the store shared by all threads. | Per-thread warning list. |
 | `_optional_import()` | Restored only the Python copy of the quad-correction setting after the lazy pymupdf4llm import (also a single-threaded bug); concurrent first imports raced. | Restores both copies; first import under a lock. |
@@ -68,7 +68,7 @@ verifies and profiles both variants (`base` and `atomic`).
 |---|---|
 | `src/__init__.py`, `src/table.py`, `src/extra.i` | The changes above; `_free_threaded` and `_get_layout_per_thread` flags. |
 | `setup.py` | Don't add `pymupdf-layout==2.1` to the requirements when layout is embedded (it pulled in the empty placeholder package). `PYMUPDF_SETUP_VERSION_LOCAL` adds a local version label: `build_pymupdf.sh` builds `2.1+ft315t.<commit>` (`pymupdf.__version__` stays `2.1`). |
-| `freethreaded/patches/mupdf-0001-free-threading.patch` | MuPDF 1.28.6: everything above in MuPDF (allocator, glyph cache, FreeType face locks, per-thread HarfBuzz/OpenJPEG/Leptonica contexts, store keys, `fz_skip`, context clone, font cache publishing), and in the C++ bindings warning callbacks for all threads, the deferred-warning queue, the per-thread lock count, `MUPDF_lock_stats=1`, optional `MUPDF_indep_ctx=1`. Edits `scripts/wrap/cpp.py` and `swig.py` (code generators), so re-check on every MuPDF upgrade. |
+| `freethreaded/patches/mupdf-0001-free-threading.patch` | MuPDF 1.28.6: everything above in MuPDF (allocator, glyph cache, FreeType face locks, per-thread HarfBuzz/OpenJPEG/Leptonica contexts, store keys, `fz_skip`, context clone, font cache publishing), and in the C++ bindings warning callbacks for all threads, the deferred-warning queue, the per-thread lock count, `MUPDF_lock_stats=1`, and no longer the kit's `MUPDF_indep_ctx=1`. Edits `scripts/wrap/cpp.py` and `swig.py` (code generators), so re-check on every MuPDF upgrade. |
 | `freethreaded/patches/mupdf-0002-atomic-refcounts.patch` | Optional (see above): atomic `fz_keep_imp*`/`fz_drop_imp*` (`context.h`) and storable counts (`store.c`, `image.c`). |
 | `freethreaded/patches/layout-0001-free-threading.patch` | pymupdf_layout 2.1: per-thread models, onnxruntime thread settings, `GlobalConfig`, the `features.c` font reference leak. |
 | `freethreaded/patches/pymupdf4llm-0001-free-threading.patch` | pymupdf4llm: lock skipped with per-thread models, OCR and message fixes. |
@@ -129,7 +129,6 @@ The CI workflow uploads the wheels as artifacts (`pymupdf-cp315t-base`, `pymupdf
 |---|---|---|
 | `PYMUPDF_LAYOUT_PER_THREAD` | `1` | One layout model per thread (about 20 MB each). `0`: one shared model behind `_LAYOUT_LOCK`. |
 | `PYMUPDF_LAYOUT_ORT_THREADS` | `1` | onnxruntime intra-op threads per session for models made on worker threads. `0`: onnxruntime's defaults. With few worker threads on a big machine, 2–4 can help. |
-| `MUPDF_indep_ctx` | `0` | **Experimental, benchmarking only.** `1` gives each thread a fully independent MuPDF context with no locks. It is not safe in general (see below). |
 | `MUPDF_lock_stats` | `0` | `1` prints, at exit, per MuPDF lock: acquisitions, contended acquisitions and wait time. |
 
 Two-thirds of `to_markdown` time is ONNX inference on the kit's corpus, so MuPDF-level speedups
@@ -149,12 +148,12 @@ It generates 80 development and 60 held-out PDFs (seeded; text from small word l
 every `_features` call and the reference markdown with the official wheel, then checks ours:
 
 1. `_features` bit-exact on all 112 fields;
-2. `_features` thread stress at 8 threads × 3 rounds, `MUPDF_indep_ctx` 0 and 1;
-3. at 1/4/8 threads, with a new thread pool per round and `MUPDF_indep_ctx` 0 and 1:
+2. `_features` thread stress at 8 threads × 3 rounds;
+3. at 1/4/8 threads, with a new thread pool per round:
    rendering in RGB/GRAY/CMYK, text, image info, and either `rawdict` character boxes or
    `find_tables()` (so both run at once); hashes must equal the sequential run;
 4. `to_markdown` byte-identical with the built-in per-thread models at 1/4/8 threads × 3 rounds,
-   `MUPDF_indep_ctx` 0 and 1, and once with `PYMUPDF_LAYOUT_PER_THREAD=0`;
+   and once with `PYMUPDF_LAYOUT_PER_THREAD=0`;
 5. with the real-world PDFs: step 3 on the first 6 pages and step 4 on the first 12 pages of each;
 6. `regress_store_keys.py`: two PDFs that differ only in an object behind the same direct key,
    rendered together and on 8 threads (the official wheel is run too and fails it, as expected).
@@ -166,7 +165,7 @@ reference, because PyPI has no onnxruntime for 3.15. `results/` holds the kit's 
 Further checks, in CI:
 
 - **Sanitizers** (`freethreaded_315t_sanitize.yml`): ASan and TSan builds of MuPDF and the bindings
-  run step 3 on both PDF sets and both context modes, `to_markdown` with layout
+  run step 3 on both PDF sets, `to_markdown` with layout
   (`stress_md.py`) and step 6. A TSan job on a CPython built with ThreadSanitizer reports
   nothing; in the jobs with the stock interpreter, `tsan_triage.py` counts the reports from the
   uninstrumented interpreter, onnxruntime and numpy separately and fails on any in our code.
@@ -194,11 +193,11 @@ edition (`"pinned": false`), so their hashes are not enforced.
 - Set warning/error callbacks (`mupdf.fz_set_warning_callback`) only before starting threads;
   replacing one frees the previous callback object while other threads' contexts may still use
   it.
-- **`MUPDF_indep_ctx=1` is not safe for general use.** Independent contexts have no locks, so any
-  MuPDF object released on a thread other than its own corrupts refcounts, and Python's garbage
-  collector can run finalisers on any thread. And an independent context is dropped when its
-  thread exits, so objects it made must not outlive the thread. It is kept for comparison; with
-  the FreeType face locks the shared context now scales about as well.
+- Every thread's MuPDF context is a clone of one base context, sharing its locks, store and
+  caches, so MuPDF objects may be released on any thread (Python can drop the last reference
+  anywhere). The kit's experimental `MUPDF_indep_ctx=1` (a lock-free context per thread) was
+  removed: it corrupted reference counts when that happened (ThreadSanitizer showed it), and
+  with the FreeType face locks the shared context scales as well (2.53× vs 2.49× on real PDFs).
 - Upstream says PyMuPDF does not support multithreaded use (FAQ). This build is ours to support.
 
 ## Keeping it current
@@ -229,7 +228,6 @@ On each new PyMuPDF / MuPDF / layout / pymupdf4llm / onnxruntime release:
   are not reported upstream yet.
 - Minor MuPDF races not fixed: hyphenation dictionaries load lazily without a lock (HTML with
   hyphenation), and lcms warnings from all threads go to the base context.
-- With `MUPDF_indep_ctx=1`: see the thread-safety rules.
 - The real-world test set has no CC BY slide decks or brochures from outside the US government.
 
 ## License

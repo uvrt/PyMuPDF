@@ -176,13 +176,12 @@ jobs:
           PYMUPDF_LAYOUT_ORT_THREADS=0 "$PY" "$V/profile_md.py" corpus 24 1,2,4 ort_default.json 2>&1 | tee -a ../profile.txt
           PYMUPDF_LAYOUT_PER_THREAD=0 "$PY" "$V/profile_md.py" corpus 24 1,4 shared_model.json 2>&1 | tee -a ../profile.txt
           PROFILE_GC=off "$PY" "$V/profile_md.py" corpus 24 1,2,4 gc_off.json 2>&1 | tee -a ../profile.txt
-          MUPDF_indep_ctx=1 "$PY" "$V/profile_md.py" corpus 24 1,2,4 indep.json 2>&1 | tee -a ../profile.txt
-          for indep in 0 1; do MUPDF_indep_ctx=$indep "$PY" "$V/stress_render.py" corpus 1,2,4 2 2>&1 | tee -a ../profile.txt; done
+          "$PY" "$V/stress_render.py" corpus 1,2,4 2 2>&1 | tee -a ../profile.txt
           echo "## real-world PDFs, first 6 pages each" | tee -a ../profile.txt
           MAX_PAGES=6 "$PY" "$V/profile_md.py" ../docs 45 1,2,4 docs_default.json 2>&1 | tee -a ../profile.txt
           MAX_PAGES=6 PYMUPDF_LAYOUT_ORT_THREADS=0 "$PY" "$V/profile_md.py" ../docs 45 1,4 docs_ort_default.json 2>&1 | tee -a ../profile.txt
           MAX_PAGES=6 PROFILE_GC=off "$PY" "$V/profile_md.py" ../docs 45 1,4 docs_gc_off.json 2>&1 | tee -a ../profile.txt
-          for indep in 0 1; do MAX_PAGES=4 MUPDF_indep_ctx=$indep "$PY" "$V/stress_render.py" ../docs 1,2,4 1 2>&1 | tee -a ../profile.txt; done
+          MAX_PAGES=4 "$PY" "$V/stress_render.py" ../docs 1,2,4 1 2>&1 | tee -a ../profile.txt
       - name: MuPDF lock contention (MUPDF_lock_stats=1)
         continue-on-error: true
         shell: bash
@@ -217,11 +216,13 @@ jobs:
             for op in none get_drawings get_text_dict get_textpage get_pixmap; do
               "$PY" "$V/gc_pause.py" ../docs $op 3 20 2>&1 | grep "^gc_pause"
             done
+            "$PY" "$V/gc_pause.py" synthetic:50000 get_drawings 3 30 2>&1 | grep "^gc_pause"
             if ls ../baseline-wheels/pymupdf-*.whl >/dev/null 2>&1; then
               "$RUNNER_TEMP/py315t/python/bin/python3.15t" -m venv "$RUNNER_TEMP/baseline"
               "$RUNNER_TEMP/baseline/bin/pip" install -q --no-deps ../baseline-wheels/pymupdf-*.whl
               echo "## baseline: run $BASELINE_RUN (before the device-callback safepoints)"
               "$RUNNER_TEMP/baseline/bin/python" "$V/gc_pause.py" ../docs get_drawings 3 20 2>&1 | grep "^gc_pause"
+              "$RUNNER_TEMP/baseline/bin/python" "$V/gc_pause.py" synthetic:50000 get_drawings 3 30 2>&1 | grep "^gc_pause"
             fi
           } | tee ../gc_pause.txt
       - name: Sampling profiler (wall clock, all threads)
@@ -256,20 +257,12 @@ jobs:
         run: |
           PY="$RUNNER_TEMP/ours/bin/python"; V="$PWD/freethreaded/verify"; cd prof; export PYTHONPATH="$V"
           set +e +o pipefail   # diagnostics: head closing a pipe (grep: broken pipe) must not end the step
-          for indep in 0 1; do
-            MUPDF_indep_ctx=$indep perf record -q -F 499 -g -o oncpu$indep.data -- "$PY" -X perf "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
-            perf report -i oncpu$indep.data --no-children --sort dso,sym --stdio 2>/dev/null | grep -v "^$" | head -80 > ../perf_oncpu_indep$indep.txt
-            MUPDF_indep_ctx=$indep perf record -q -e sched:sched_switch -g -o offcpu$indep.data -- "$PY" "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
-            perf report -i offcpu$indep.data --no-children --sort sym --stdio -G 2>/dev/null | grep -v "^$" | head -200 > ../perf_offcpu_indep$indep.txt
-          done
-          # Rendering + text (stress_render), default vs independent contexts: on-CPU by symbol,
-          # and where threads block (sched_switch call graphs: locks show as futex waits).
-          for indep in 0 1; do
-            MUPDF_indep_ctx=$indep perf record -q -F 999 -g -o r_on$indep.data -- "$PY" "$V/stress_render.py" corpus 4 1 >/dev/null 2>&1
-            perf report -i r_on$indep.data --no-children --sort dso,sym --stdio -g none 2>/dev/null | grep -v "^$" | grep -v "^#" | head -60 > ../perf_render_oncpu_indep$indep.txt
-            MUPDF_indep_ctx=$indep perf record -q -e sched:sched_switch -g -o r_off$indep.data -- "$PY" "$V/stress_render.py" corpus 4 1 >/dev/null 2>&1
-            perf report -i r_off$indep.data --no-children --sort sym --stdio -G 2>/dev/null | grep -v "^$" | head -250 > ../perf_render_offcpu_indep$indep.txt
-          done
+          # to_markdown: on-CPU by symbol.
+          perf record -q -F 499 -g -o oncpu.data -- "$PY" -X perf "$V/profile_md.py" corpus 16 4 >/dev/null 2>&1
+          perf report -i oncpu.data --no-children --sort dso,sym --stdio 2>/dev/null | grep -v "^$" | head -80 > ../perf_oncpu_md.txt
+          # Rendering + text (stress_render): on-CPU by symbol.
+          perf record -q -F 999 -g -o r_on.data -- "$PY" "$V/stress_render.py" corpus 4 1 >/dev/null 2>&1
+          perf report -i r_on.data --no-children --sort dso,sym --stdio -g none 2>/dev/null | grep -v "^$" | grep -v "^#" | head -60 > ../perf_render_oncpu.txt
           # onnxruntime threads per process during to_markdown at 4 threads (expect none beyond the 4 workers)
           ( "$PY" "$V/profile_md.py" corpus 8 4 >/dev/null 2>&1 & P=$!; sleep 25; ps -T -p $P -o tid,comm,pcpu | sort -k3 -rn | head -40; wait $P ) > ../threads_md.txt 2>&1
           ls -l ../perf_*.txt ../threads_md.txt

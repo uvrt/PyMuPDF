@@ -6,7 +6,7 @@ run at once in different threads. Every hash must
 equal the sequential run.
 A fresh thread pool per round makes threads start and exit, which drops thread-local objects.
 usage: python stress_render.py PDFDIR THREADS[,..] ROUNDS
-Run with MUPDF_indep_ctx=0 and 1."""
+"""
 import hashlib, os, sys, time
 from concurrent.futures import ThreadPoolExecutor
 import pymupdf
@@ -36,7 +36,7 @@ def job(i):
 t0 = time.perf_counter()
 ref = dict(job(i) for i in range(2 * len(files)))  # both mixes
 seq = time.perf_counter() - t0
-print(f"indep_ctx={os.environ.get('MUPDF_indep_ctx', '0')} gil={sys._is_gil_enabled()} files={len(files)} sequential={seq:.2f}s", flush=True)
+print(f"gil={sys._is_gil_enabled()} files={len(files)} sequential={seq:.2f}s", flush=True)
 failed = False
 for n in NS:
     t0 = time.perf_counter(); bad = 0; jobs = 0
