@@ -1,6 +1,6 @@
 --- a/include/mupdf/fitz/context.h
 +++ b/include/mupdf/fitz/context.h
-@@ -962,20 +962,25 @@
+@@ -968,20 +968,25 @@
  #define fz_drop_imp(C,P,R) fz_drop_imp_aux((C), (P), (P) ? (R) : NULL)
  #define fz_drop_imp8(C,P,R) fz_drop_imp8_aux((C), (P), (P) ? (R) : NULL)
  #define fz_drop_imp16(C,P,R) fz_drop_imp16_aux((C), (P), (P) ? (R) : NULL)
@@ -33,7 +33,7 @@
  	}
  	return p;
  }
-@@ -985,12 +990,13 @@
+@@ -991,12 +996,13 @@
  {
  	if (p)
  	{
@@ -51,7 +51,7 @@
  	}
  	return p;
  }
-@@ -1000,109 +1006,96 @@
+@@ -1006,109 +1012,96 @@
  {
  	if (p)
  	{

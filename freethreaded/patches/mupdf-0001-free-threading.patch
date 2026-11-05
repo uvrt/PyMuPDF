@@ -1,3 +1,36 @@
+--- a/include/mupdf/fitz/context.h
++++ b/include/mupdf/fitz/context.h
+@@ -276,6 +276,12 @@
+ 
+ enum {
+ 	FZ_LOCK_ALLOC = 0,
++	/* Free-threading patch: FreeType face locks, one per stripe of fonts
++	 * (fz_ft_face_lock). Numbered below FZ_LOCK_FREETYPE so that the rule
++	 * above holds: fz_ft_lock takes FZ_LOCK_FREETYPE and then all of them,
++	 * from the last down; a face lock holder may still take FZ_LOCK_ALLOC. */
++	FZ_LOCK_FREETYPE_FACE,
++	FZ_LOCK_FREETYPE_FACE_LAST = FZ_LOCK_FREETYPE_FACE + 15,
+ 	FZ_LOCK_FREETYPE,
+ 	FZ_LOCK_GLYPHCACHE,
+ 	FZ_LOCK_MAX
+--- a/include/mupdf/fitz/font.h
++++ b/include/mupdf/fitz/font.h
+@@ -830,6 +830,15 @@
+ 
+ void fz_ft_unlock(fz_context *ctx);
+ 
++/* Free-threading patch. Internal: lock only the FreeType face of one font,
++ * for calls that use that face alone (glyph loading, char index lookups);
++ * other threads can use other faces meanwhile. fz_ft_lock() is still needed
++ * to create or destroy faces. Don't take another font's face lock, or
++ * fz_ft_lock(), while holding one. See font.c. */
++void fz_ft_face_lock(fz_context *ctx, fz_font *font);
++
++void fz_ft_face_unlock(fz_context *ctx, fz_font *font);
++
+ /* Internal function. Must be called with FT_ALLOC_LOCK
+  * held. Returns 1 if this thread (context!) already holds
+  * the freeetype lock. */
 --- a/scripts/wrap/cpp.py
 +++ b/scripts/wrap/cpp.py
 @@ -1608,7 +1608,22 @@
@@ -9,13 +42,13 @@
 +            callback on the calling thread's context and on the base context
 +            from which later threads' contexts are made. */
 +            FZ_FUNCTION void {rename.internal('set_diagnostic_callback')}(int is_error, fz_warning_cb* print, void* user);
-+
+ 
 +            /** Internal use only. Queues a diagnostic on the calling thread,
 +            for a callback that must not run now (its thread is detached from
 +            an interpreter, and may hold a MuPDF lock).
 +            {rename.internal('diagnostics_flush')}() delivers the queue. */
 +            FZ_FUNCTION void {rename.internal('diagnostic_defer')}(fz_warning_cb* print, void* user, const char* message);
- 
++
 +            /** Internal use only. Calls the calling thread's queued diagnostics,
 +            in the order they were queued. */
 +            FZ_FUNCTION void {rename.internal('diagnostics_flush')}();
@@ -35,7 +68,7 @@
  
              #include <string.h>
  
-@@ -1706,6 +1726,32 @@
+@@ -1706,6 +1726,36 @@
              #endif
  
              static bool s_state_valid = false;
@@ -55,20 +88,24 @@
 +
 +            static void s_lock_stats_print()
 +            {{
-+                static const char* names[] = {{ "ALLOC", "FREETYPE", "GLYPHCACHE" }};
 +                fprintf( stderr, "MuPDF lock stats: lock acquired contended(%%) wait_s\\n");
 +                for (int i = 0; i < FZ_LOCK_MAX; ++i)
 +                {{
 +                    unsigned long long a = s_lock_stats.acquired[i], c = s_lock_stats.contended[i];
++                    char name[32];
++                    if (i == FZ_LOCK_ALLOC)             snprintf( name, sizeof name, "ALLOC");
++                    else if (i == FZ_LOCK_FREETYPE)     snprintf( name, sizeof name, "FREETYPE");
++                    else if (i == FZ_LOCK_GLYPHCACHE)   snprintf( name, sizeof name, "GLYPHCACHE");
++                    else                                snprintf( name, sizeof name, "FT_FACE%d", i - FZ_LOCK_FREETYPE_FACE);
++                    if (!a) continue;
 +                    fprintf( stderr, "MuPDF lock stats: %s %llu %llu(%.2f) %.3f\\n",
-+                            (i < 3) ? names[i] : "?", a, c, a ? 100.0 * c / a : 0.0,
-+                            s_lock_stats.wait_ns[i] / 1e9);
++                            name, a, c, 100.0 * c / a, s_lock_stats.wait_ns[i] / 1e9);
 +                }}
 +            }}
  
              struct {rename.internal("state")}
              {{
-@@ -1716,6 +1762,14 @@
+@@ -1716,6 +1766,14 @@
                      m_locks.lock = lock;
                      m_locks.unlock = unlock;
                      m_ctx = nullptr;
@@ -83,7 +120,7 @@
                      bool multithreaded = true;
                      const char* s = getenv( "MUPDF_mt_ctx");
                      if ( s && !strcmp( s, "0")) multithreaded = false;
-@@ -1755,7 +1809,21 @@
+@@ -1755,7 +1813,21 @@
                  {{
                      {rename.internal("state")}*    self = ({rename.internal("state")}*) user;
                      internal_assert( self->m_multithreaded);
@@ -105,7 +142,7 @@
                  }}
                  static void unlock(void *user, int lock)
                  {{
-@@ -1786,6 +1854,11 @@
+@@ -1786,6 +1858,11 @@
  
              static {rename.internal("state")}  s_state;
  
@@ -117,7 +154,7 @@
              struct {rename.internal("thread_state")}
              {{
                  {rename.internal("thread_state")}()
-@@ -1830,7 +1903,19 @@
+@@ -1830,7 +1907,19 @@
                                      << " calling fz_clone_context()\\n";
                          }}
                          internal_assert(s_state_valid);
@@ -138,7 +175,7 @@
                          if (s_trace)
                          {{
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
-@@ -1850,6 +1935,11 @@
+@@ -1850,6 +1939,11 @@
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
                                      << " calling fz_drop_context()\\n";
                          }}
@@ -150,7 +187,7 @@
                          fz_drop_context( m_ctx);
                      }}
  
-@@ -1871,6 +1961,46 @@
+@@ -1871,6 +1965,46 @@
  
              static thread_local {rename.internal("thread_state")}  s_thread_state;
  
@@ -321,7 +358,235 @@
  		fz_unlock(ctx, FZ_LOCK_ALLOC);
 --- a/source/fitz/font.c
 +++ b/source/fitz/font.c
-@@ -1320,20 +1320,35 @@
+@@ -321,21 +321,91 @@
+ 	char *str;
+ };
+ 
+-static void *ft_alloc(FT_Memory memory, long size)
++/* Free-threading patch: FreeType locking.
++ *
++ * FreeType (2.14) allows one FT_Library to be shared by threads as long as
++ * FT_New_Face and FT_Done_Face are serialised and each FT_Face is used by one
++ * thread at a time; glyph loading, rendering and the rasterisers are
++ * otherwise reentrant. MuPDF used a single lock for all FreeType calls,
++ * which serialised glyph work across all threads. Now:
++ *
++ * - fz_ft_lock() takes FZ_LOCK_FREETYPE and every face lock: exclusive access
++ *   to the library and all faces, as before. Font creation and destruction,
++ *   and all callers outside this file, use it.
++ * - fz_ft_face_lock() takes only the face lock of one font, one of
++ *   FZ_LOCK_FREETYPE_FACE..FZ_LOCK_FREETYPE_FACE_LAST chosen by the face's
++ *   address; the per-glyph functions in this file use it. Whatever a font's
++ *   per-glyph functions change (the face's size and transform, the advance
++ *   cache) is only changed under that font's face lock.
++ * - The FreeType allocator's context is per thread (ft_tls_ctx), set by both,
++ *   as several threads can now be inside FreeType at once.
++ * Locks nest per thread: inside fz_ft_lock(), fz_ft_face_lock() takes nothing,
++ * and fz_ft_lock_held() is true while the thread holds either kind. */
++#if defined(_MSC_VER)
++#define FZ_THREAD_LOCAL __declspec(thread)
++#else
++#define FZ_THREAD_LOCAL __thread
++#endif
++static FZ_THREAD_LOCAL fz_context *ft_tls_ctx = NULL;
++static FZ_THREAD_LOCAL int ft_tls_depth = 0;
++static FZ_THREAD_LOCAL int ft_tls_global = 0;
++static FZ_THREAD_LOCAL int ft_tls_face = -1; /* face lock held, if not global */
++
++#define FT_FACE_LOCKS (FZ_LOCK_FREETYPE_FACE_LAST - FZ_LOCK_FREETYPE_FACE + 1)
++
++static int
++ft_face_lock_id(fz_font *font)
+ {
+-	fz_context *ctx = (fz_context *) memory->user;
+-	return Memento_label(fz_malloc_no_throw(ctx, size), "ft_alloc");
++	uintptr_t p = (uintptr_t)font->ft_face;
++	return FZ_LOCK_FREETYPE_FACE + (int)((p >> 6) % FT_FACE_LOCKS);
+ }
+ 
+-static void ft_free(FT_Memory memory, void *block)
++void
++fz_ft_face_lock(fz_context *ctx, fz_font *font)
+ {
+-	fz_context *ctx = (fz_context *) memory->user;
++	int id = ft_face_lock_id(font);
++	if (ft_tls_depth == 0)
++	{
++		fz_lock(ctx, id);
++		ft_tls_face = id;
++		ft_tls_ctx = ctx;
++	}
++	else
++	{
++		/* Nested: inside fz_ft_lock(), or inside this face lock again.
++		 * Holding one face lock while taking another could deadlock. */
++		assert(ft_tls_global || ft_tls_face == id);
++	}
++	ft_tls_depth++;
++}
++
++void
++fz_ft_face_unlock(fz_context *ctx, fz_font *font)
++{
++	if (--ft_tls_depth == 0)
++	{
++		assert(!ft_tls_global);
++		ft_tls_ctx = NULL;
++		ft_tls_face = -1;
++		fz_unlock(ctx, ft_face_lock_id(font));
++	}
++}
++
++static void *ft_alloc(FT_Memory memory FZ_UNUSED, long size)
++{
++	fz_context *ctx = ft_tls_ctx;
++	return Memento_label(fz_malloc_no_throw(ctx, size), "ft_alloc");
++}
++
++static void ft_free(FT_Memory memory FZ_UNUSED, void *block)
++{
++	fz_context *ctx = ft_tls_ctx;
+ 	fz_free(ctx, block);
+ }
+ 
+ static void *ft_realloc(FT_Memory memory, long cur_size, long new_size, void *block)
+ {
+-	fz_context *ctx = (fz_context *) memory->user;
++	fz_context *ctx = ft_tls_ctx;
+ 	void *newblock = NULL;
+ 	if (new_size == 0)
+ 	{
+@@ -350,28 +420,35 @@
+ void
+ fz_ft_lock(fz_context *ctx)
+ {
++	int i;
++	assert(ft_tls_depth == 0); /* never nested, and never inside a face lock */
+ 	fz_lock(ctx, FZ_LOCK_FREETYPE);
+-	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	assert(ctx->font->ftmemory.user == NULL);
+-	ctx->font->ftmemory.user = ctx;
+-	fz_unlock(ctx, FZ_LOCK_ALLOC);
++	for (i = FZ_LOCK_FREETYPE_FACE_LAST; i >= FZ_LOCK_FREETYPE_FACE; --i)
++		fz_lock(ctx, i);
++	ft_tls_global = 1;
++	ft_tls_depth = 1;
++	ft_tls_ctx = ctx;
+ }
+ 
+ void
+ fz_ft_unlock(fz_context *ctx)
+ {
+-	fz_lock(ctx, FZ_LOCK_ALLOC);
+-	ctx->font->ftmemory.user = NULL;
+-	fz_unlock(ctx, FZ_LOCK_ALLOC);
++	int i;
++	assert(ft_tls_global && ft_tls_depth == 1);
++	ft_tls_ctx = NULL;
++	ft_tls_depth = 0;
++	ft_tls_global = 0;
++	for (i = FZ_LOCK_FREETYPE_FACE; i <= FZ_LOCK_FREETYPE_FACE_LAST; ++i)
++		fz_unlock(ctx, i);
+ 	fz_unlock(ctx, FZ_LOCK_FREETYPE);
+ }
+ 
+ int
+ fz_ft_lock_held(fz_context *ctx)
+ {
+-	/* If this thread has locked the freetype lock already, then
+-	 * the stored context will be this one. */
+-	return (ctx->font->ftmemory.user == ctx);
++	/* True while this thread holds the FreeType lock or a face lock: it
++	 * then must not drop a font (FT_Done_Face takes fz_ft_lock). */
++	return ft_tls_depth > 0 && ft_tls_ctx == ctx;
+ }
+ 
+ void fz_new_font_context(fz_context *ctx)
+@@ -998,9 +1075,9 @@
+ 		float subw;
+ 		float realw;
+ 
+-		fz_ft_lock(ctx);
++		fz_ft_face_lock(ctx, font);
+ 		fterr = FT_Get_Advance(font->ft_face, gid, FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING | FT_LOAD_IGNORE_TRANSFORM, &adv);
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		if (fterr && fterr != FT_Err_Invalid_Argument)
+ 			fz_warn(ctx, "FT_Get_Advance(%s,%d): %s", font->name, gid, ft_error_string(fterr));
+ 
+@@ -1054,7 +1131,7 @@
+ 	if (font->flags.fake_italic)
+ 		trm = fz_pre_shear(trm, SHEAR, 0);
+ 
+-	fz_ft_lock(ctx);
++	fz_ft_face_lock(ctx, font);
+ 
+ 	if (aa == 0)
+ 	{
+@@ -1139,7 +1216,7 @@
+ 
+ 	if (slot == NULL)
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		return NULL;
+ 	}
+ 
+@@ -1149,7 +1226,7 @@
+ 	}
+ 	fz_always(ctx)
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 	}
+ 	fz_catch(ctx)
+ 	{
+@@ -1168,7 +1245,7 @@
+ 
+ 	if (slot == NULL)
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		return NULL;
+ 	}
+ 
+@@ -1178,7 +1255,7 @@
+ 	}
+ 	fz_always(ctx)
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 	}
+ 	fz_catch(ctx)
+ 	{
+@@ -1215,7 +1292,7 @@
+ 	v.x = trm.e * 64;
+ 	v.y = trm.f * 64;
+ 
+-	fz_ft_lock(ctx);
++	fz_ft_face_lock(ctx, font);
+ 	fterr = FT_Set_Char_Size(face, 65536, 65536, 72, 72); /* should be 64, 64 */
+ 	if (fterr)
+ 	{
+@@ -1291,7 +1368,7 @@
+ 
+ 	if (bitmap == NULL)
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		return NULL;
+ 	}
+ 
+@@ -1302,7 +1379,7 @@
+ 	fz_always(ctx)
+ 	{
+ 		FT_Done_Glyph(glyph);
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 	}
+ 	fz_catch(ctx)
+ 	{
+@@ -1320,20 +1397,35 @@
  	if (gid < 0 || gid >= font->glyph_count || !font->use_glyph_bbox)
  		return NULL;
  
@@ -364,7 +629,154 @@
  }
  
  static fz_rect *
-@@ -2030,16 +2045,24 @@
+@@ -1366,7 +1458,7 @@
+ 	v.x = trm.e * 65536;
+ 	v.y = trm.f * 65536;
+ 
+-	fz_ft_lock(ctx);
++	fz_ft_face_lock(ctx, font);
+ 	/* Set the char size to scale=face->units_per_EM to effectively give
+ 	 * us unscaled results. This avoids quantisation. We then apply the
+ 	 * scale ourselves below. */
+@@ -1379,7 +1471,7 @@
+ 	if (fterr)
+ 	{
+ 		fz_warn(ctx, "FT_Load_Glyph(%s,%d,FT_LOAD_NO_HINTING): %s", font->name, gid, ft_error_string(fterr));
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		bounds->x0 = bounds->x1 = trm.e;
+ 		bounds->y0 = bounds->y1 = trm.f;
+ 		return bounds;
+@@ -1392,7 +1484,7 @@
+ 	}
+ 
+ 	FT_Outline_Get_CBox(&face->glyph->outline, &cbox);
+-	fz_ft_unlock(ctx);
++	fz_ft_face_unlock(ctx, font);
+ 	bounds->x0 = cbox.xMin * recip;
+ 	bounds->y0 = cbox.yMin * recip;
+ 	bounds->x1 = cbox.xMax * recip;
+@@ -1511,7 +1603,7 @@
+ 	if (font->flags.fake_italic)
+ 		trm = fz_pre_shear(trm, SHEAR, 0);
+ 
+-	fz_ft_lock(ctx);
++	fz_ft_face_lock(ctx, font);
+ 
+ 	fterr = FT_Set_Char_Size(face, scale, scale, 72, 72);
+ 	if (fterr)
+@@ -1526,7 +1618,7 @@
+ 	if (fterr)
+ 	{
+ 		fz_warn(ctx, "FT_Load_Glyph(%s,%d,FT_LOAD_IGNORE_TRANSFORM | FT_LOAD_NO_HINTING): %s", font->name, gid, ft_error_string(fterr));
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		return NULL;
+ 	}
+ 
+@@ -1551,7 +1643,7 @@
+ 	}
+ 	fz_always(ctx)
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 	}
+ 	fz_catch(ctx)
+ 	{
+@@ -1912,10 +2004,10 @@
+ 	if (wmode)
+ 		mask |= FT_LOAD_VERTICAL_LAYOUT;
+ 	if (!locked)
+-		fz_ft_lock(ctx);
++		fz_ft_face_lock(ctx, font);
+ 	fterr = FT_Get_Advance(font->ft_face, gid, mask, &adv);
+ 	if (!locked)
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 	if (fterr && fterr != FT_Err_Invalid_Argument)
+ 	{
+ 		fz_warn(ctx, "FT_Get_Advance(%s,%d): %s", font->name, gid, ft_error_string(fterr));
+@@ -1952,9 +2044,9 @@
+ 		if (FT_HAS_GLYPH_NAMES(face))
+ 		{
+ 			int fterr;
+-			fz_ft_lock(ctx);
++			fz_ft_face_lock(ctx, font);
+ 			fterr = FT_Get_Glyph_Name(face, glyph, buf, size);
+-			fz_ft_unlock(ctx);
++			fz_ft_face_unlock(ctx, font);
+ 			if (fterr)
+ 				fz_warn(ctx, "FT_Get_Glyph_Name(%s,%d): %s", font->name, glyph, ft_error_string(fterr));
+ 		}
+@@ -1978,27 +2070,44 @@
+ 		{
+ 			float f;
+ 			int block = gid>>8;
+-			fz_ft_lock(ctx);
+-			if (!font->advance_cache)
++			float **cache;
++			float *row;
++
++			/* Free-threading patch: cached advances are read without a
++			 * lock. The cache and each row are filled under the face lock
++			 * and only then published (release); readers acquire. */
++			cache = __atomic_load_n(&font->advance_cache, __ATOMIC_ACQUIRE);
++			if (cache)
+ 			{
++				row = __atomic_load_n(&cache[block], __ATOMIC_ACQUIRE);
++				if (row)
++					return row[gid & 255];
++			}
++
++			fz_ft_face_lock(ctx, font);
++			cache = font->advance_cache;
++			if (!cache)
++			{
+ 				int n = (font->glyph_count+255)/256;
+ 				fz_try(ctx)
+-					font->advance_cache = Memento_label(fz_malloc_array(ctx, n, float *), "font_advance_cache");
++					cache = Memento_label(fz_malloc_array(ctx, n, float *), "font_advance_cache");
+ 				fz_catch(ctx)
+ 				{
+-					fz_ft_unlock(ctx);
++					fz_ft_face_unlock(ctx, font);
+ 					fz_rethrow(ctx);
+ 				}
+-				memset(font->advance_cache, 0, n * sizeof(float *));
++				memset(cache, 0, n * sizeof(float *));
++				__atomic_store_n(&font->advance_cache, cache, __ATOMIC_RELEASE);
+ 			}
+-			if (!font->advance_cache[block])
++			row = cache[block];
++			if (!row)
+ 			{
+ 				int i, n;
+ 				fz_try(ctx)
+-					font->advance_cache[block] = Memento_label(fz_malloc_array(ctx, 256, float), "font_advance_cache");
++					row = Memento_label(fz_malloc_array(ctx, 256, float), "font_advance_cache");
+ 				fz_catch(ctx)
+ 				{
+-					fz_ft_unlock(ctx);
++					fz_ft_face_unlock(ctx, font);
+ 					fz_rethrow(ctx);
+ 				}
+ 				n = (block<<8)+256;
+@@ -2006,10 +2115,11 @@
+ 					n = font->glyph_count;
+ 				n -= (block<<8);
+ 				for (i = 0; i < n; ++i)
+-					font->advance_cache[block][i] = fz_advance_ft_glyph_aux(ctx, font, (block<<8)+i, 0, 1);
++					row[i] = fz_advance_ft_glyph_aux(ctx, font, (block<<8)+i, 0, 1);
++				__atomic_store_n(&cache[block], row, __ATOMIC_RELEASE);
+ 			}
+-			f = font->advance_cache[block][gid & 255];
+-			fz_ft_unlock(ctx);
++			f = row[gid & 255];
++			fz_ft_face_unlock(ctx, font);
+ 			return f;
+ 		}
+ 
+@@ -2030,20 +2140,28 @@
  		{
  			int pg = ucs >> 8;
  			int ix = ucs & 0xFF;
@@ -375,13 +787,15 @@
 +				/* Filled before it is published; see get_gid_bbox(). */
  				int i;
 -				font->encoding_cache[pg] = fz_malloc_array(ctx, 256, uint16_t);
+-				fz_ft_lock(ctx);
 +				uint16_t *expected = NULL;
 +				cache = fz_malloc_array(ctx, 256, uint16_t);
- 				fz_ft_lock(ctx);
++				fz_ft_face_lock(ctx, font);
  				for (i = 0; i < 256; ++i)
 -					font->encoding_cache[pg][i] = FT_Get_Char_Index(font->ft_face, (pg << 8) + i);
+-				fz_ft_unlock(ctx);
 +					cache[i] = FT_Get_Char_Index(font->ft_face, (pg << 8) + i);
- 				fz_ft_unlock(ctx);
++				fz_ft_face_unlock(ctx, font);
 +				if (!__atomic_compare_exchange_n(&font->encoding_cache[pg], &expected, cache, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
 +				{
 +					fz_free(ctx, cache);
@@ -391,8 +805,69 @@
 -			return font->encoding_cache[pg][ix];
 +			return cache[ix];
  		}
- 		fz_ft_lock(ctx);
+-		fz_ft_lock(ctx);
++		fz_ft_face_lock(ctx, font);
  		idx = FT_Get_Char_Index(font->ft_face, ucs);
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		return idx;
+ 	}
+ 	return ucs;
+@@ -2064,17 +2182,17 @@
+ 			name = fz_glyph_name_from_unicode_sc(unicode);
+ 			if (name)
+ 			{
+-				fz_ft_lock(ctx);
++				fz_ft_face_lock(ctx, font);
+ 				glyph = FT_Get_Name_Index(font->ft_face, (char*)name);
+-				fz_ft_unlock(ctx);
++				fz_ft_face_unlock(ctx, font);
+ 				if (glyph > 0)
+ 					return glyph;
+ 			}
+ 
+ 			sprintf(buf, "uni%04X.sc", unicode);
+-			fz_ft_lock(ctx);
++			fz_ft_face_lock(ctx, font);
+ 			glyph = FT_Get_Name_Index(font->ft_face, buf);
+-			fz_ft_unlock(ctx);
++			fz_ft_face_unlock(ctx, font);
+ 			if (glyph > 0)
+ 				return glyph;
+ 		}
+@@ -2088,11 +2206,11 @@
+ 	int glyph = 0;
+ 	if (font->ft_face)
+ 	{
+-		fz_ft_lock(ctx);
++		fz_ft_face_lock(ctx, font);
+ 		glyph = ft_name_index(font->ft_face, glyphname);
+ 		if (glyph == 0)
+ 			glyph = ft_char_index(font->ft_face, fz_unicode_from_glyph_name(glyphname));
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 	}
+ 	// TODO: type3 fonts (not needed for now)
+ 	return glyph;
+@@ -2440,14 +2558,14 @@
+ 	if (font == NULL || font->ft_face == NULL)
+ 		return;
+ 
+-	fz_ft_lock(ctx);
++	fz_ft_face_lock(ctx, font);
+ 	for (ucs = FT_Get_First_Char(font->ft_face, &gid); gid > 0; ucs = FT_Get_Next_Char(font->ft_face, ucs, &gid))
+ 	{
+-		fz_ft_unlock(ctx);
++		fz_ft_face_unlock(ctx, font);
+ 		cb(ctx, opaque, ucs, gid);
+-		fz_ft_lock(ctx);
++		fz_ft_face_lock(ctx, font);
+ 	}
+-	fz_ft_unlock(ctx);
++	fz_ft_face_unlock(ctx, font);
+ }
+ 
+ void fz_calculate_font_ascender_descender(fz_context *ctx, fz_font *font)
 --- a/source/fitz/draw-glyph.c
 +++ b/source/fitz/draw-glyph.c
 @@ -356,7 +356,14 @@
@@ -580,6 +1055,23 @@
  	size_t count, l, total = 0;
  
  	while (len)
+--- a/source/pdf/pdf-font.c
++++ b/source/pdf/pdf-font.c
+@@ -261,11 +261,12 @@
+ 			}
+ 		}
+ 
++		/* Free-threading patch: only this font's face (per glyph). */
+ 		if (ctx)
+-			fz_ft_lock(ctx);
++			fz_ft_face_lock(ctx, fontdesc->font);
+ 		cid = ft_char_index(fontdesc->font->ft_face, cid);
+ 		if (ctx)
+-			fz_ft_unlock(ctx);
++			fz_ft_face_unlock(ctx, fontdesc->font);
+ 		return cid;
+ 	}
+ 
 --- a/source/pdf/pdf-store.c
 +++ b/source/pdf/pdf-store.c
 @@ -52,6 +52,17 @@
