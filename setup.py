@@ -275,6 +275,18 @@ version_p = '2.1'
 # upstream 2.1. pymupdf.__version__ stays version_p, so code that checks it is unaffected.
 version_local = os.environ.get('PYMUPDF_SETUP_VERSION_LOCAL')
 version_package = f'{version_p}+{version_local}' if version_local else version_p
+if version_local:
+    # pipcl's PEP 440 check (pipcl 13) omits the optional local segment; check that part
+    # against PEP 440's local-version grammar and let pipcl check the public part.
+    assert re.match(r'^[a-z0-9]+([.][a-z0-9]+)*$', version_local, re.IGNORECASE), \
+            f'Bad local version label: {version_local!r}'
+    _pipcl_assert_version_pep_440 = pipcl._assert_version_pep_440
+    def _assert_version_pep_440_local(version):
+        public, plus, local = version.partition('+')
+        if plus:
+            assert re.match(r'^[a-z0-9]+([.][a-z0-9]+)*$', local, re.IGNORECASE), f'Bad version: {version!r}.'
+        _pipcl_assert_version_pep_440(public)
+    pipcl._assert_version_pep_440 = _assert_version_pep_440_local
 
 version_mupdf = '1.28.6'
 
