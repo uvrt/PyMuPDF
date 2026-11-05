@@ -5,7 +5,7 @@
 #
 # usage: freethreaded/scripts/build_pymupdf.sh /path/to/python3.15t [WORKDIR]
 #   PYMUPDF_FT_ATOMIC_REFCOUNTS=1 also applies patches/mupdf-0002-atomic-refcounts.patch.
-# result: WORKDIR/dist/pymupdf-2.1-cp315-cp315t-linux_x86_64.whl
+# result: WORKDIR/dist/pymupdf-2.1+ft315t.<commit>-cp315-cp315t-linux_x86_64.whl
 #
 # Needs: git, curl, patch, a C/C++ toolchain (gcc/g++ 13+, make), python3.15t with venv.
 # A clean build takes about 10 minutes (most of it MuPDF); swig comes from the build-isolation
@@ -78,6 +78,8 @@ export PYMUPDF_SETUP_REQUIRE_LAYOUT_4LLM=0   # don't depend on the empty pymupdf
 export PYMUPDF_SETUP_MUPDF_BUILD="$WORK/mupdf-$MUPDF_VERSION-source"
 export PYMUPDF_SETUP_PATH_LAYOUT="$WORK/pymupdf_layout"   # builds _features and _tgif, embeds pymupdf.layout
 export PYMUPDF_SETUP_PATH_4LLM="$WORK/pymupdf4llm"       # embeds pymupdf4llm
+# Package version 2.1+ft315t.<commit>: never mistaken for upstream 2.1 (pymupdf.__version__ stays 2.1).
+export PYMUPDF_SETUP_VERSION_LOCAL=${PYMUPDF_SETUP_VERSION_LOCAL:-ft315t.$(git -C "$REPO" rev-parse --short=7 HEAD)}
 mkdir -p dist
 venv-build/bin/python -m pip wheel --no-deps ./pymupdf-src -w dist
 ls -l dist/pymupdf-*-cp315-cp315t-*.whl

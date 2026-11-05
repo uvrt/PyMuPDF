@@ -270,6 +270,12 @@ PYMUPDF_SETUP_REQUIRE_LAYOUT_4LLM = os.environ.get('PYMUPDF_SETUP_REQUIRE_LAYOUT
 # PyMuPDF version.
 version_p = '2.1'
 
+# Free-threading branch: PYMUPDF_SETUP_VERSION_LOCAL adds a PEP 440 local version label to the
+# package (wheel name, pip, metadata), e.g. 2.1+ft315t.8096622, so the build cannot be taken for
+# upstream 2.1. pymupdf.__version__ stays version_p, so code that checks it is unaffected.
+version_local = os.environ.get('PYMUPDF_SETUP_VERSION_LOCAL')
+version_package = f'{version_p}+{version_local}' if version_local else version_p
+
 version_mupdf = '1.28.6'
 
 g_requires_dist = list()
@@ -1458,7 +1464,7 @@ g_entry_points = textwrap.dedent('''
 
 p = pipcl.Package(
         g_package_name,
-        version_p,
+        version_package,
         summary = 'A high performance Python library for data extraction, analysis, conversion & manipulation of PDF (and other) documents.',
         description = 'README.md',
         description_content_type = 'text/markdown',
