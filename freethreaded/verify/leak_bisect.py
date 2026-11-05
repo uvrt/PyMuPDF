@@ -1,6 +1,7 @@
 """Which stage of to_markdown leaks? Runs each stage alone over the first page of every PDF in
 PDFDIR, ROUNDS times after a warm-up round, and reports the growth of memory that glibc malloc
-has handed out and not got back (mallinfo2: uordblks + hblkhd) per call. A stage that leaks
+has handed out and not got back (mallinfo2: uordblks + hblkhd) per call, measured with MuPDF's
+resource cache emptied (it holds up to 256 MB and would otherwise read as growth). A stage that leaks
 shows a steady positive figure; caches settle during warm-up. Run on our build and on the
 official wheel to tell our leaks from upstream ones.
 usage: python leak_bisect.py PDFDIR ROUNDS [THREADS]"""
@@ -26,6 +27,7 @@ _libc.mallinfo2.restype = _MallInfo2
 
 def in_use():
     gc.collect()
+    pymupdf.TOOLS.store_shrink(100)   # empty MuPDF's resource cache: count what stays, not what is cached
     m = _libc.mallinfo2()
     return m.uordblks + m.hblkhd
 

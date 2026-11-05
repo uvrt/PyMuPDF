@@ -15,6 +15,8 @@ UNINSTRUMENTED = {"python3.15t": "interpreter", "onnxruntime_pybind11_state.so":
 
 
 def module_of(frame):
+    if "/include/python3" in frame:   # CPython header code inlined into an extension
+        return "interpreter"
     for name, label in UNINSTRUMENTED.items():
         if "(" + name in frame:
             return label
