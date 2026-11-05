@@ -11,7 +11,7 @@ name: free-threaded 3.15t sanitizers
 on:
   push:
     branches: [python-3.15t]
-    paths: ['freethreaded/patches/mupdf-*', 'src/**', 'freethreaded/verify/**', '.github/workflows/freethreaded_315t_sanitize.yml']
+    paths: ['freethreaded/patches/mupdf-*', 'src/**', '.github/workflows/freethreaded_315t_sanitize.yml']
   workflow_dispatch:
 
 env:

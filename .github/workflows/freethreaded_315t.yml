@@ -9,9 +9,20 @@ on:
     paths: ['src/**', 'setup.py', 'freethreaded/**', '.github/workflows/freethreaded_315t.yml']
   workflow_dispatch:
     inputs:
+      run_soak:
+        description: 'Run the soak matrix (4 jobs of soak_minutes each)'
+        type: boolean
+        default: false
       soak_minutes:
         description: 'Soak test length in minutes'
         default: '180'
+      run_leaks:
+        description: 'Run the per-stage leak bisection'
+        type: boolean
+        default: false
+
+# A push runs build, verify, profile; the soak and leak jobs are heavy and run only when asked
+# for: a manual run with run_soak / run_leaks, or [soak] / [leaks] in the pushed commit message.
 
 env:
   PBS_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.15.2%2B20261026-x86_64-unknown-linux-gnu-freethreaded-install_only.tar.gz
@@ -252,8 +263,7 @@ jobs:
     # keeps growing (RSS slope over the second half). 60 minutes on push.
     # Matrix to tell a leak from allocator fragmentation: the workload split by kind, and the mix
     # with fewer glibc malloc arenas.
-    # Runs on manual dispatch, or on a push whose commit message contains [soak].
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[soak]')
+    if: inputs.run_soak || contains(github.event.head_commit.message, '[soak]')
     needs: [onnxruntime, pymupdf]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
@@ -308,6 +318,7 @@ jobs:
   leaks:
     # Per-stage memory growth of the to_markdown pipeline (verify/leak_bisect.py), on our build
     # and on the official wheel, to locate the growth the md soak shows.
+    if: inputs.run_leaks || contains(github.event.head_commit.message, '[leaks]')
     needs: [onnxruntime, pymupdf]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
