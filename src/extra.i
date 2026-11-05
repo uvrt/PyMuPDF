@@ -106,9 +106,11 @@ catch(...) {
 /* Free threading: long MuPDF calls that don't touch Python objects run detached
 from the interpreter (JM_Detached, JM_detach/JM_attach), so that stop-the-world
 pauses, which a free-threaded cyclic GC needs, don't wait for them. MuPDF
-warnings and errors reach Python through DiagnosticCallback, which attaches
-again (patches/mupdf-0001). Loops that use the Python API for a long time call
-JM_safepoint(), which lets a pending stop-the-world proceed.
+warnings and errors raised meanwhile are queued on the thread by
+DiagnosticCallback (patches/mupdf-0001) and delivered to Python by JM_attach(),
+in order: calling Python from detached code that may hold a MuPDF lock could
+deadlock with a stop-the-world pause. Loops that use the Python API for a long
+time call JM_safepoint(), which lets a pending stop-the-world proceed.
 On GIL builds all of these do nothing: those calls keep the GIL, exactly as
 upstream PyMuPDF, so code that shares a Document between threads there keeps
 working as before. */
@@ -125,6 +127,7 @@ static inline void JM_attach(PyThreadState* state)
 {
 #ifdef Py_GIL_DISABLED
     PyEval_RestoreThread(state);
+    mupdf::internal_diagnostics_flush();
 #else
     (void) state;
 #endif

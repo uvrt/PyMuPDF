@@ -1,31 +1,45 @@
 --- a/scripts/wrap/cpp.py
 +++ b/scripts/wrap/cpp.py
-@@ -1609,6 +1609,11 @@
+@@ -1608,7 +1608,22 @@
+ 
              /** Internal use only. Returns `fz_context*` for use by current thread. */
              FZ_FUNCTION fz_context* {rename.internal('context_get')}();
- 
++
 +            /** Internal use only. Sets the warning (is_error=0) or error
 +            callback on the calling thread's context and on the base context
 +            from which later threads' contexts are made. */
 +            FZ_FUNCTION void {rename.internal('set_diagnostic_callback')}(int is_error, fz_warning_cb* print, void* user);
 +
++            /** Internal use only. Queues a diagnostic on the calling thread,
++            for a callback that must not run now (its thread is detached from
++            an interpreter, and may hold a MuPDF lock).
++            {rename.internal('diagnostics_flush')}() delivers the queue. */
++            FZ_FUNCTION void {rename.internal('diagnostic_defer')}(fz_warning_cb* print, void* user, const char* message);
+ 
++            /** Internal use only. Calls the calling thread's queued diagnostics,
++            in the order they were queued. */
++            FZ_FUNCTION void {rename.internal('diagnostics_flush')}();
++
              /* Internal, do not call directly. */
              FZ_FUNCTION void {rename.internal('check_ndebug0')}(bool caller_ndebug_defined);
  
-@@ -1638,6 +1643,9 @@
+@@ -1638,6 +1653,11 @@
              #include <iostream>
              #include <thread>
              #include <mutex>
 +            #include <atomic>
 +            #include <chrono>
 +            #include <cstdio>
++            #include <string>
++            #include <vector>
  
              #include <string.h>
  
-@@ -1707,6 +1715,32 @@
+@@ -1706,6 +1726,32 @@
+             #endif
  
              static bool s_state_valid = false;
- 
++
 +            /* Free-threading patch: MUPDF_lock_stats=1 counts, per MuPDF lock
 +            (FZ_LOCK_ALLOC, _FREETYPE, _GLYPHCACHE), the acquisitions, those that
 +            found the lock held, and the time spent waiting, and prints them to
@@ -51,11 +65,10 @@
 +                            s_lock_stats.wait_ns[i] / 1e9);
 +                }}
 +            }}
-+
+ 
              struct {rename.internal("state")}
              {{
-                 /* Constructor. */
-@@ -1716,6 +1750,14 @@
+@@ -1716,6 +1762,14 @@
                      m_locks.lock = lock;
                      m_locks.unlock = unlock;
                      m_ctx = nullptr;
@@ -70,7 +83,7 @@
                      bool multithreaded = true;
                      const char* s = getenv( "MUPDF_mt_ctx");
                      if ( s && !strcmp( s, "0")) multithreaded = false;
-@@ -1755,7 +1797,21 @@
+@@ -1755,7 +1809,21 @@
                  {{
                      {rename.internal("state")}*    self = ({rename.internal("state")}*) user;
                      internal_assert( self->m_multithreaded);
@@ -92,7 +105,7 @@
                  }}
                  static void unlock(void *user, int lock)
                  {{
-@@ -1786,6 +1842,11 @@
+@@ -1786,6 +1854,11 @@
  
              static {rename.internal("state")}  s_state;
  
@@ -104,7 +117,7 @@
              struct {rename.internal("thread_state")}
              {{
                  {rename.internal("thread_state")}()
-@@ -1830,7 +1891,19 @@
+@@ -1830,7 +1903,19 @@
                                      << " calling fz_clone_context()\\n";
                          }}
                          internal_assert(s_state_valid);
@@ -125,7 +138,7 @@
                          if (s_trace)
                          {{
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
-@@ -1850,6 +1923,11 @@
+@@ -1850,6 +1935,11 @@
                              std::cerr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): "
                                      << " calling fz_drop_context()\\n";
                          }}
@@ -137,11 +150,10 @@
                          fz_drop_context( m_ctx);
                      }}
  
-@@ -1870,6 +1948,20 @@
-             }};
+@@ -1871,6 +1961,46 @@
  
              static thread_local {rename.internal("thread_state")}  s_thread_state;
-+
+ 
 +            FZ_FUNCTION void {rename.internal("set_diagnostic_callback")}(int is_error, fz_warning_cb* print, void* user)
 +            {{
 +                fz_context* ctx = {rename.internal("context_get")}();
@@ -155,9 +167,36 @@
 +                    else            fz_set_warning_callback(s_state.m_ctx, print, user);
 +                }}
 +            }}
- 
++
++            /* Free-threading patch: diagnostics queued by threads detached from
++            the interpreter (see {rename.internal("diagnostic_defer")}). */
++            struct {rename.internal("deferred_diagnostic")}
++            {{
++                fz_warning_cb*  print;
++                void*           user;
++                std::string     message;
++            }};
++            static thread_local std::vector<{rename.internal("deferred_diagnostic")}> s_deferred_diagnostics;
++
++            FZ_FUNCTION void {rename.internal("diagnostic_defer")}(fz_warning_cb* print, void* user, const char* message)
++            {{
++                s_deferred_diagnostics.push_back( {{ print, user, message ? message : "" }});
++            }}
++
++            FZ_FUNCTION void {rename.internal("diagnostics_flush")}()
++            {{
++                while (!s_deferred_diagnostics.empty())
++                {{
++                    std::vector<{rename.internal("deferred_diagnostic")}> pending;
++                    pending.swap( s_deferred_diagnostics);
++                    for (auto& d : pending)
++                        d.print( d.user, d.message.c_str());
++                }}
++            }}
++
              FZ_FUNCTION fz_context* {rename.internal("context_get")}()
              {{
+                 if (s_state.m_multithreaded)
 --- a/scripts/wrap/swig.py
 +++ b/scripts/wrap/swig.py
 @@ -421,11 +421,12 @@
@@ -175,14 +214,23 @@
                      }}
                      else
                      {{
-@@ -466,6 +467,17 @@
+@@ -466,6 +467,26 @@
                  static void s_print( void* self0, const char* message)
                  {{
                      DiagnosticCallback* self = (DiagnosticCallback*) self0;
 +                    /* Free-threading patch: the caller may run detached from
-+                    the interpreter (PyEval_SaveThread()), so attach for the
-+                    Python override of _print(). */
++                    the interpreter (PyEval_SaveThread()), and may hold a MuPDF
++                    lock. Attaching then could deadlock: a stop-the-world pause
++                    makes us wait, while it waits for an attached thread that
++                    is blocked on our lock. So queue the message; whoever
++                    detached delivers it after attaching again
++                    (mupdf::internal_diagnostics_flush()). */
 +                    #ifdef SWIGPYTHON
++                    if (!PyThreadState_GetUnchecked())
++                    {{
++                        mupdf::internal_diagnostic_defer( s_print, self0, message);
++                        return;
++                    }}
 +                    struct Attached
 +                    {{
 +                        PyGILState_STATE m_state;
