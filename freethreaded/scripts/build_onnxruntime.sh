@@ -31,6 +31,10 @@ if git -C src apply --check "$KIT/patches/onnxruntime-0001-python-3.15-packaging
     git -C src apply "$KIT/patches/onnxruntime-0001-python-3.15-packaging.patch"
 fi
 
+# -z noexecstack on every shared/module link: without it onnxruntime_pybind11_state.so came out with
+# an RWE PT_GNU_STACK (an object in its link lacks .note.GNU-stack; the wheel's other two .so files
+# were RW), and glibc >= 2.41 (Debian trixie) refuses to dlopen such a module.
+# verify/check_execstack.py checks the wheel after the build.
 "$PY" -m venv --clear venv-build
 venv-build/bin/python -m pip install -q --upgrade pip
 venv-build/bin/python -m pip install -q cmake ninja numpy packaging protobuf flatbuffers wheel setuptools sympy
@@ -42,5 +46,8 @@ PATH="$WORK/venv-build/bin:$PATH" venv-build/bin/python src/tools/ci_build/build
     --skip_tests --skip_submodule_sync --skip_pip_install \
     --compile_no_warning_as_error \
     --cmake_generator Ninja \
-    --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
+    --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
+        CMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack \
+        CMAKE_MODULE_LINKER_FLAGS=-Wl,-z,noexecstack
 ls -l "$WORK"/build/Release/dist/onnxruntime-*-cp315-cp315t-*.whl
+"$PY" -I "$KIT/verify/check_execstack.py" "$WORK"/build/Release/dist/onnxruntime-*-cp315-cp315t-*.whl
