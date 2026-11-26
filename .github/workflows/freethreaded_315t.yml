@@ -108,12 +108,12 @@ jobs:
           path: wheels
       - name: Import on trixie
         run: |
-          apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl
+          apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl gcc libc6-dev   # psutil has no cp315t wheel
           ldd --version | head -1
           curl -fsSL -o /tmp/pbs.tgz "$PBS_URL" && echo "$PBS_SHA256  /tmp/pbs.tgz" | sha256sum -c -
           mkdir -p /opt/py315t && tar xzf /tmp/pbs.tgz -C /opt/py315t
           /opt/py315t/python/bin/python3.15t -m venv /opt/venv
-          /opt/venv/bin/pip install -q --find-links wheels wheels/onnxruntime-*.whl wheels/pymupdf-*.whl
+          CC=gcc /opt/venv/bin/pip install -q --find-links wheels wheels/onnxruntime-*.whl wheels/pymupdf-*.whl
           cd /tmp && /opt/venv/bin/python -I -c '
           import os, platform, sys
           import onnxruntime, pymupdf, pymupdf.layout
@@ -143,7 +143,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Python 3.15t and the published wheels
         run: |
-          apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl
+          apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl gcc libc6-dev   # psutil has no cp315t wheel
           ldd --version | head -1
           curl -fsSL -o /tmp/pbs.tgz "$PBS_URL" && echo "$PBS_SHA256  /tmp/pbs.tgz" | sha256sum -c -
           mkdir -p /opt/py315t && tar xzf /tmp/pbs.tgz -C /opt/py315t
@@ -166,7 +166,7 @@ jobs:
       - name: Import and layout to_markdown on trixie
         run: |
           /opt/py315t/python/bin/python3.15t -m venv /opt/venv
-          /opt/venv/bin/pip install -q --find-links patched patched/onnxruntime-*.whl "published/$PYMUPDF_WHL"
+          CC=gcc /opt/venv/bin/pip install -q --find-links patched patched/onnxruntime-*.whl "published/$PYMUPDF_WHL"
           /opt/venv/bin/pip list
           cd /tmp && /opt/venv/bin/python -I -c '
           import platform, sys
