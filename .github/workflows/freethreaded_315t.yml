@@ -123,6 +123,72 @@ jobs:
           print("pymupdf", pymupdf.__version__, "layout ok; GIL disabled")
           '
 
+  release-execstack-fix:
+    # The published release wheel with only its stack flag cleared (scripts/clear_execstack.py,
+    # build tag 1), proven on Debian trixie (glibc 2.41) with the published pymupdf wheel: imports,
+    # layout to_markdown with onnxruntime inference, GIL off. Not on push: it checks a release.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 30
+    env:
+      RELEASE: https://github.com/uvrt/PyMuPDF/releases/download/v2.1-ft315t-ae9dfcb
+      ORT_WHL: onnxruntime-1.31.1-cp315-cp315t-linux_x86_64.whl
+      ORT_SHA256: 33d4b8683767cb3c74a38d957db781b1b02c05ee37fbd434519f56f296753a37
+      PYMUPDF_WHL: pymupdf-2.1+ft315t.ae9dfcb-cp315-cp315t-linux_x86_64.whl
+      PYMUPDF_SHA256: 6601d6c9b128793170e5054ecc80a86ff2d269196ba3460fbfa2020b35c19b5d
+      DOC_URL: https://arxiv.org/pdf/1602.03837v1
+      DOC_SHA256: e5e864c23d015b69be17e5b5d51b5b462d2829353a867513414b6728f54589c4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python 3.15t and the published wheels
+        run: |
+          apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl
+          ldd --version | head -1
+          curl -fsSL -o /tmp/pbs.tgz "$PBS_URL" && echo "$PBS_SHA256  /tmp/pbs.tgz" | sha256sum -c -
+          mkdir -p /opt/py315t && tar xzf /tmp/pbs.tgz -C /opt/py315t
+          mkdir -p published patched
+          curl -fsSL -o "published/$ORT_WHL" "$RELEASE/$ORT_WHL"
+          curl -fsSL -o "published/$PYMUPDF_WHL" "$RELEASE/$(echo "$PYMUPDF_WHL" | sed 's/+/%2B/')"
+          printf '%s  %s\n' "$ORT_SHA256" "published/$ORT_WHL" "$PYMUPDF_SHA256" "published/$PYMUPDF_WHL" | sha256sum -c -
+          curl -fsSL -A pymupdf-315t-ci/1.0 -o /tmp/doc.pdf "$DOC_URL" && echo "$DOC_SHA256  /tmp/doc.pdf" | sha256sum -c -
+      - name: Clear the executable stack
+        run: |
+          PY=/opt/py315t/python/bin/python3.15t
+          if $PY -I freethreaded/verify/check_execstack.py "published/$ORT_WHL"; then echo "expected an RWE .so in the published wheel"; exit 1; fi
+          $PY -I freethreaded/scripts/clear_execstack.py "published/$ORT_WHL" patched 1
+          $PY -I freethreaded/verify/check_execstack.py patched/*.whl "published/$PYMUPDF_WHL"
+          sha256sum patched/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-cp315t-build1
+          path: patched/*.whl
+      - name: Import and layout to_markdown on trixie
+        run: |
+          /opt/py315t/python/bin/python3.15t -m venv /opt/venv
+          /opt/venv/bin/pip install -q --find-links patched patched/onnxruntime-*.whl "published/$PYMUPDF_WHL"
+          /opt/venv/bin/pip list
+          cd /tmp && /opt/venv/bin/python -I -c '
+          import platform, sys
+          import onnxruntime, pymupdf, pymupdf.layout, pymupdf4llm
+          runs = []
+          _run = onnxruntime.InferenceSession.run
+          def run(self, *a, **k):
+              runs.append(1)
+              return _run(self, *a, **k)
+          onnxruntime.InferenceSession.run = run
+          pymupdf4llm.use_layout(True)
+          doc = pymupdf.open("/tmp/doc.pdf")
+          md = pymupdf4llm.to_markdown(doc, pages=[0, 1, 2], show_progress=False)
+          print(md[:600])
+          assert len(md) > 1000, len(md)
+          assert runs, "onnxruntime inference never ran"
+          assert not sys._is_gil_enabled(), "GIL is enabled"
+          print("glibc", platform.libc_ver(), "python", sys.version)
+          print("onnxruntime", onnxruntime.__version__, "InferenceSession.run calls:", len(runs))
+          print("pymupdf", pymupdf.__version__, "layout to_markdown ok:", len(md), "chars; GIL disabled")
+          '
+
   verify:
     needs: [onnxruntime, pymupdf]
     runs-on: ubuntu-24.04
